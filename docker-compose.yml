@@ -1,0 +1,23 @@
+# Local Postgres for development. Mirrors the managed Postgres (Aurora
+# Serverless v2) used in the deployed environment, so local behaviour matches
+# production. Start it with `npm run db:up`.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portofino
+      POSTGRES_PASSWORD: portofino
+      POSTGRES_DB: portofino
+    ports:
+      - "5432:5432"
+    volumes:
+      - portofino_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portofino"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  portofino_pgdata:
