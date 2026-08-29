@@ -49,11 +49,16 @@ export async function loadMenu(
   const itemQuery = db.select().from(menuItems);
   const [categoryRows, itemRows, legendRows] = await Promise.all([
     db.select().from(menuCategories).orderBy(asc(menuCategories.sortOrder)),
+    // Both branches order identically. `sortOrder` alone is not a total order —
+    // two items may share one — and without the `id` tiebreaker Postgres is
+    // free to return a tie in any order it likes, differently between calls.
+    // That would let the owner's editor (which always had the tiebreaker) and
+    // the diner's menu present the same card deck in two different orders.
     options.includeUnavailable
       ? itemQuery.orderBy(asc(menuItems.sortOrder), asc(menuItems.id))
       : itemQuery
           .where(eq(menuItems.available, true))
-          .orderBy(asc(menuItems.sortOrder)),
+          .orderBy(asc(menuItems.sortOrder), asc(menuItems.id)),
     db.select().from(allergenLegend).orderBy(asc(allergenLegend.sortOrder)),
   ]);
 
