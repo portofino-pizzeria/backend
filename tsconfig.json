@@ -5,13 +5,16 @@
     "moduleResolution": "Bundler",
     "lib": ["ES2022"],
     "types": ["node"],
-    "outDir": "dist",
-    "rootDir": "src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true
   },
-  "include": ["src"]
+  // `npm run typecheck` uses this config, and it deliberately covers the tests
+  // and the tool configs as well as `src`. A tsconfig that excluded `test/`
+  // would give a green typecheck that had never looked at a single test file.
+  // The emitting build uses tsconfig.build.json, which is `src` only.
+  "include": ["src", "test", "vitest.config.ts", "drizzle.config.ts"]
 }
