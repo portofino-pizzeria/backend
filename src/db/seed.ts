@@ -43,6 +43,65 @@ function buildSummary(dataset: MenuDataset): SeedSummary {
 }
 
 /**
+ * Sort key for one printed item number. `"76a"` is a real number, so the
+ * numeric part and the letter suffix are compared separately — otherwise
+ * string ordering puts `"109"` before `"76"` and `"76b"` before `"76a"` only
+ * by luck.
+ */
+function numberKey(number: string): [number, string] {
+  const match = /^(\d+)(.*)$/.exec(number.trim());
+  if (!match) return [Number.MAX_SAFE_INTEGER, number.trim()];
+  return [Number(match[1]), match[2].trim()];
+}
+
+/**
+ * Per-category presentation order, keyed by item id.
+ *
+ * The capture records the order the website's own DOM happened to use, and on
+ * five of the thirteen non-empty categories that order does not follow the
+ * printed numbers — Pizza comes back 6, 5, 4, 3, 2, 1, 7, 8… A diner asking
+ * for "die 1" then finds it sixth in the list, which reads as a broken menu
+ * and is the drift `audience_profile/owner-operator` calls worse than having
+ * no app at all.
+ *
+ * `domain_spec/menu` (1) makes the number identity rather than decoration, so
+ * the number is what the menu is ordered by. Items Portofino prints no number
+ * for (drinks, Angebote, sauces) keep their captured order and follow the
+ * numbered ones — `mexikanisch` is the one category that mixes both.
+ *
+ * This is derived at load time on purpose: `data/menu.json` stays a faithful
+ * record of what the site served, and the presentation decision lives in code
+ * where it is reviewable. Once loaded, the column is the owner's to reorder
+ * from the editor.
+ */
+function presentationOrder(items: MenuDataset['items']): Map<string, number> {
+  const byCategory = new Map<string, MenuDataset['items']>();
+  for (const item of items) {
+    const list = byCategory.get(item.categoryId) ?? [];
+    list.push(item);
+    byCategory.set(item.categoryId, list);
+  }
+
+  const order = new Map<string, number>();
+  for (const list of byCategory.values()) {
+    const sorted = [...list].sort((a, b) => {
+      // Numbered items first, in printed-number order.
+      if (Boolean(a.number) !== Boolean(b.number)) return a.number ? -1 : 1;
+      if (a.number && b.number) {
+        const [an, as_] = numberKey(a.number);
+        const [bn, bs] = numberKey(b.number);
+        if (an !== bn) return an - bn;
+        if (as_ !== bs) return as_ < bs ? -1 : 1;
+      }
+      // Unnumbered items — and exact ties — keep the captured order.
+      return a.sortOrder - b.sortOrder;
+    });
+    sorted.forEach((item, index) => order.set(item.id, index));
+  }
+  return order;
+}
+
+/**
  * Replaces the menu tables wholesale with the captured Portofino dataset
  * (`backend/data/menu.json`). Idempotent — safe to run any number of times,
  * including on every server boot, since `index.ts` calls this as part of its
@@ -98,6 +157,8 @@ export async function seedMenu(): Promise<number> {
       );
     }
 
+    const menuOrder = presentationOrder(dataset.items);
+
     if (dataset.items.length > 0) {
       await tx.insert(menuItems).values(
         dataset.items.map((item) => ({
@@ -114,7 +175,7 @@ export async function seedMenu(): Promise<number> {
           allergenCodes: item.allergenCodes, // Verbatim — never filtered.
           imageUrl: null, // Not in the capture; the owner adds these later.
           available: item.available,
-          sortOrder: item.sortOrder,
+          sortOrder: menuOrder.get(item.id) ?? item.sortOrder,
         })),
       );
     }
