@@ -1,120 +1,163 @@
+import { fileURLToPath } from 'node:url';
+
 import { db, sql } from './client.js';
-import { menuCategories, menuItemVariants, menuItems } from './schema.js';
+import { loadMenuDataset, type MenuDataset } from './menu-dataset.js';
+import {
+  allergenLegend,
+  menuCategories,
+  menuItemVariants,
+  menuItems,
+} from './schema.js';
 
-// PLACEHOLDER DATA — this whole catalogue is invented English filler and is
-// scheduled to be replaced wholesale by a loader over the real, harvested
-// Portofino menu. It exists only so a fresh local database has something to
-// serve. Do not treat any of it as Portofino's menu.
-//
-// `id` is a stable slug — the mobile app builds its UI Bridge ids from it
-// (menu-add-<id>). Prices are in cents (EUR) and live on variants, never on
-// the item.
-type SeedCategory = { id: string; label: string; labelEn: string };
-
-type SeedItem = {
-  id: string;
-  name: string;
-  description: string;
-  categoryId: string;
-  price: number;
-};
-
-const CATEGORIES: SeedCategory[] = [
-  { id: 'pizza', label: 'Pizza', labelEn: 'Pizza' },
-  { id: 'sides', label: 'Beilagen', labelEn: 'Sides' },
-  { id: 'drinks', label: 'Getränke', labelEn: 'Drinks' },
-  { id: 'desserts', label: 'Desserts', labelEn: 'Desserts' },
-];
-
-const MENU: SeedItem[] = [
-  // Pizze
-  { id: 'margherita', name: 'Margherita', description: 'San Marzano tomato, fior di latte, fresh basil, EVOO.', categoryId: 'pizza', price: 990 },
-  { id: 'marinara', name: 'Marinara', description: 'Tomato, garlic, oregano, EVOO. No cheese — the classic.', categoryId: 'pizza', price: 890 },
-  { id: 'diavola', name: 'Diavola', description: 'Tomato, mozzarella, spicy salami, chilli.', categoryId: 'pizza', price: 1190 },
-  { id: 'prosciutto-funghi', name: 'Prosciutto e Funghi', description: 'Tomato, mozzarella, cooked ham, mushrooms.', categoryId: 'pizza', price: 1290 },
-  { id: 'quattro-formaggi', name: 'Quattro Formaggi', description: 'Mozzarella, gorgonzola, fontina, grana padano.', categoryId: 'pizza', price: 1290 },
-  { id: 'capricciosa', name: 'Capricciosa', description: 'Tomato, mozzarella, ham, artichoke, mushroom, olives.', categoryId: 'pizza', price: 1350 },
-  { id: 'vegetariana', name: 'Vegetariana', description: 'Tomato, mozzarella, grilled seasonal vegetables.', categoryId: 'pizza', price: 1190 },
-  { id: 'quattro-stagioni', name: 'Quattro Stagioni', description: 'Ham, mushroom, artichoke, olives — four seasons.', categoryId: 'pizza', price: 1390 },
-
-  // Sides
-  { id: 'garlic-bread', name: 'Garlic Bread', description: 'Wood-fired dough, garlic butter, parsley.', categoryId: 'sides', price: 490 },
-  { id: 'bruschetta', name: 'Bruschetta', description: 'Toasted bread, tomato, basil, garlic, EVOO.', categoryId: 'sides', price: 590 },
-  { id: 'insalata-mista', name: 'Insalata Mista', description: 'Mixed leaves, tomato, cucumber, house dressing.', categoryId: 'sides', price: 690 },
-  { id: 'olive', name: 'Olive Ascolane', description: 'Breaded, stuffed, fried green olives.', categoryId: 'sides', price: 640 },
-
-  // Drinks
-  { id: 'acqua-panna', name: 'Acqua Panna 0.5L', description: 'Still mineral water.', categoryId: 'drinks', price: 250 },
-  { id: 'san-pellegrino', name: 'S. Pellegrino 0.5L', description: 'Sparkling mineral water.', categoryId: 'drinks', price: 250 },
-  { id: 'coca-cola', name: 'Coca-Cola 0.33L', description: 'Chilled classic.', categoryId: 'drinks', price: 290 },
-  { id: 'limonata', name: 'Limonata 0.33L', description: 'Italian sparkling lemonade.', categoryId: 'drinks', price: 320 },
-  { id: 'birra-moretti', name: 'Birra Moretti 0.33L', description: 'Italian lager.', categoryId: 'drinks', price: 390 },
-
-  // Dolci
-  { id: 'tiramisu', name: 'Tiramisù', description: 'Mascarpone, espresso, cocoa, savoiardi.', categoryId: 'desserts', price: 590 },
-  { id: 'panna-cotta', name: 'Panna Cotta', description: 'Vanilla cream, berry coulis.', categoryId: 'desserts', price: 550 },
-  { id: 'gelato', name: 'Gelato (3 scoops)', description: 'Ask your server for today’s flavours.', categoryId: 'desserts', price: 490 },
-];
-
-export async function seedMenu(): Promise<number> {
-  let categoryOrder = 0;
-  for (const category of CATEGORIES) {
-    const row = {
-      id: category.id,
-      label: category.label,
-      labelEn: category.labelEn,
-      sortOrder: categoryOrder++,
-    };
-    await db
-      .insert(menuCategories)
-      .values(row)
-      .onConflictDoUpdate({ target: menuCategories.id, set: row });
-  }
-
-  let order = 0;
-  for (const item of MENU) {
-    const row = {
-      id: item.id,
-      number: null,
-      name: item.name,
-      nameEn: null,
-      description: item.description,
-      descriptionEn: null,
-      categoryId: item.categoryId,
-      allergenCodes: [] as string[],
-      available: true,
-      sortOrder: order++,
-    };
-    // Idempotent upsert so re-running seed just refreshes the menu.
-    await db
-      .insert(menuItems)
-      .values(row)
-      .onConflictDoUpdate({ target: menuItems.id, set: row });
-
-    // Every priced thing is a variant; this filler catalogue has exactly one
-    // per item. The real menu has two or three for most items.
-    const variant = {
-      id: `${item.id}-standard`,
-      itemId: item.id,
-      label: 'Standard',
-      sortOrder: 0,
-      priceCents: item.price,
-    };
-    await db
-      .insert(menuItemVariants)
-      .values(variant)
-      .onConflictDoUpdate({ target: menuItemVariants.id, set: variant });
-  }
-  return MENU.length;
+interface SeedSummary {
+  legendCodes: number;
+  categories: number;
+  items: number;
+  variants: number;
+  emptyCategories: string[];
 }
 
-// Allow running standalone: `npm run db:seed`.
-if (import.meta.url === `file://${process.argv[1]}`) {
+function buildSummary(dataset: MenuDataset): SeedSummary {
+  const itemCountByCategory = new Map<string, number>();
+  for (const category of dataset.categories) itemCountByCategory.set(category.id, 0);
+  for (const item of dataset.items) {
+    itemCountByCategory.set(
+      item.categoryId,
+      (itemCountByCategory.get(item.categoryId) ?? 0) + 1,
+    );
+  }
+  // Three categories on the real site (Hähnchenbrust, Rumpsteak, Dessert) are
+  // published with zero items — real headings the owner will fill from the
+  // editor later, not a capture failure. Reported, never treated as invalid.
+  const emptyCategories = dataset.categories
+    .filter((category) => (itemCountByCategory.get(category.id) ?? 0) === 0)
+    .map((category) => category.id);
+
+  return {
+    legendCodes: dataset.allergenLegend.length,
+    categories: dataset.categories.length,
+    items: dataset.items.length,
+    variants: dataset.items.reduce((n, item) => n + item.variants.length, 0),
+    emptyCategories,
+  };
+}
+
+/**
+ * Replaces the menu tables wholesale with the captured Portofino dataset
+ * (`backend/data/menu.json`). Idempotent — safe to run any number of times,
+ * including on every server boot, since `index.ts` calls this as part of its
+ * DB-init retry loop.
+ *
+ * Validates the whole dataset (see menu-dataset.ts) before opening a
+ * transaction, then clears and reloads `menu_categories`, `allergen_legend`,
+ * `menu_items` and `menu_item_variants` in one transaction so a reader never
+ * observes a half-loaded menu. `orders` / `order_lines` are never touched —
+ * order history must survive a reseed, which is exactly why those tables
+ * reference menu ids by plain text rather than a foreign key (see the
+ * comment on `orderLines` in schema.ts).
+ *
+ * Returns the number of items seeded. `index.ts` logs this value directly
+ * (`Database ready (${seeded} menu items)`), so the return type stays a
+ * plain number rather than the richer summary printed below.
+ */
+export async function seedMenu(): Promise<number> {
+  const dataset = loadMenuDataset();
+  const summary = buildSummary(dataset);
+
+  await db.transaction(async (tx) => {
+    // FK-safe delete order: variants depend on items, items depend on
+    // categories. `allergen_legend` has no FK relationship to any of these —
+    // it's deleted last only for symmetry with the insert order below.
+    await tx.delete(menuItemVariants);
+    await tx.delete(menuItems);
+    await tx.delete(menuCategories);
+    await tx.delete(allergenLegend);
+
+    if (dataset.allergenLegend.length > 0) {
+      await tx.insert(allergenLegend).values(
+        // The capture carries no sortOrder for legend entries (only
+        // categories/items/variants do) — the array index preserves the
+        // order the source's own legend block renders in.
+        dataset.allergenLegend.map((entry, index) => ({
+          code: entry.code,
+          labelDe: entry.labelDe,
+          labelEn: entry.labelEn,
+          sortOrder: index,
+        })),
+      );
+    }
+
+    if (dataset.categories.length > 0) {
+      await tx.insert(menuCategories).values(
+        dataset.categories.map((category) => ({
+          id: category.id,
+          label: category.labelDe, // JSON key is labelDe; column is label.
+          labelEn: category.labelEn,
+          sortOrder: category.sortOrder,
+        })),
+      );
+    }
+
+    if (dataset.items.length > 0) {
+      await tx.insert(menuItems).values(
+        dataset.items.map((item) => ({
+          id: item.id,
+          number: item.number,
+          name: item.name,
+          nameEn: item.nameEn,
+          // The column is NOT NULL default '' — a handful of real items
+          // (sauces, Pommes) print no description at all; map null to the
+          // schema's own empty-string default rather than inventing text.
+          description: item.description ?? '',
+          descriptionEn: item.descriptionEn,
+          categoryId: item.categoryId,
+          allergenCodes: item.allergenCodes, // Verbatim — never filtered.
+          imageUrl: null, // Not in the capture; the owner adds these later.
+          available: item.available,
+          sortOrder: item.sortOrder,
+        })),
+      );
+    }
+
+    const variantRows = dataset.items.flatMap((item) =>
+      item.variants.map((variant) => ({
+        id: variant.id,
+        itemId: item.id,
+        label: variant.label,
+        sortOrder: variant.sortOrder,
+        priceCents: variant.priceCents, // JSON key matches; column is price_cents.
+      })),
+    );
+    if (variantRows.length > 0) {
+      await tx.insert(menuItemVariants).values(variantRows);
+    }
+  });
+
+  console.log(
+    [
+      'Menu seeded from data/menu.json:',
+      `  allergen legend : ${summary.legendCodes}`,
+      `  categories      : ${summary.categories}`,
+      `  items           : ${summary.items}`,
+      `  variants        : ${summary.variants}`,
+      summary.emptyCategories.length > 0
+        ? `  empty categories: ${summary.emptyCategories.join(', ')} ` +
+          '(real headings with no published items — expected)'
+        : '  empty categories: none',
+    ].join('\n'),
+  );
+
+  return summary.items;
+}
+
+// Allow running standalone: `npm run db:seed`. Compared via fileURLToPath
+// rather than a raw string template — on Windows `import.meta.url` is a
+// `file:///C:/...` URL with forward slashes while `process.argv[1]` is a
+// native `C:\...` path, so `` `file://${process.argv[1]}` `` never matches
+// and this guard would silently never fire.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   seedMenu()
-    .then((n) => {
-      console.log(`Seeded ${n} menu items.`);
-      return sql.end();
-    })
+    .then(() => sql.end())
     .then(() => process.exit(0))
     .catch((err) => {
       console.error('Seed failed:', err);
