@@ -33,11 +33,14 @@ The harness **refuses to run against a database whose name does not contain
 schema on every run, so pointing it at `portofino` would destroy your dev data.
 The override exists only for a CI database you cannot rename.
 
-`DATABASE_URL`, `KITCHEN_TOKEN`, `STRIPE_SECRET_KEY` and
+`DATABASE_URL`, `KITCHEN_TOKEN`, `OWNER_MENU_TOKEN`, `STRIPE_SECRET_KEY` and
 `STRIPE_WEBHOOK_SECRET` are all controlled by the harness
 (`test/support/env.ts`), so the suite behaves the same whatever is in your
 shell. In particular `KITCHEN_TOKEN` is cleared, which leaves the kitchen
-routes unauthenticated under test.
+routes unauthenticated under test — and `OWNER_MENU_TOKEN` is **set**
+(`TEST_OWNER_MENU_TOKEN`), because the owner's menu editor fails CLOSED and
+would otherwise refuse every request. `test/admin-menu.test.ts` clears it again,
+in a controlled way, for the fail-closed test itself.
 
 ## How the database fixture works
 
@@ -171,21 +174,26 @@ instance with logging off. Close it in `afterAll`.
 | `test/harness.test.ts` | The harness itself: it is pointed at a test database, it refuses a non-test one, tests are isolated from each other, fixture defaults behave |
 | `test/menu.test.ts` | `GET /api/menu` — payload shape, category/item/variant ordering, availability filtering, items with zero variants, and allergen resolution (a code with no legend row comes back `resolved: false` / `unbekannt`, never dropped) |
 | `test/orders.test.ts` | `POST /api/orders` — per-variant server-side pricing, client-supplied prices ignored, every refusal path (unknown variant, variant of another item, missing variant at the zod door, unknown item, unavailable item, empty order, bad quantity, no partial write), and that order lines are snapshots that survive a later menu edit or deletion |
+| `test/admin-menu.test.ts` | `/api/admin/menu/*` — the owner's editor. The fail-closed credential (D5), the editor's own read, the **four safety properties** below, that editing the menu never rewrites order history, and the everyday item / category / allergen-legend edits |
 
-## Notes for Phase 4b (the owner's menu editor)
+## The editor's four safety properties
 
-The editor is a safety surface: it writes allergens and prices that reach
-diners. Its gate is an automated suite covering the four properties in
-`domain_spec/menu` (8), not a typecheck. This harness exists so those tests can
-be written:
+The owner's menu editor writes the allergens and prices a diner reads, so its
+gate is this suite rather than a typecheck. Each property in `domain_spec/menu`
+(8) has its own `describe` in `test/admin-menu.test.ts`, and every test name
+starts with the property number so a red run says which one broke.
 
-- *allergens cannot be lost silently* — `seedItem({ allergenCodes: [...] })`,
-  then drive the editor route and re-read `GET /api/menu`.
-- *validation refuses impossible states* — assert the 400 and the message, the
-  way `test/orders.test.ts` does.
-- *an interrupted edit leaves the previous good version live* — mutate, fail
-  mid-way, re-read.
-- *a half-saved item never reaches a diner* — `GET /api/menu` after a failed
-  write.
+| Property | Enforced by | Named in |
+|---|---|---|
+| 1. Allergens cannot be lost silently | `assertAllergenIntent` — an absent `allergenCodes` leaves the stored codes untouched; an empty one needs `confirmNoAllergens: true` | `property 1: …` (6 tests) |
+| 2. Validation refuses impossible states | `normaliseVariants`, `assertCategoryExists`, `assertOrderable`, `assertCodesAreKnown` | `property 2: …` (10 tests) |
+| 3. An interrupted edit leaves the previous good version live | one `db.transaction` per write | `property 3: …` (2 tests) |
+| 4. A half-saved item never reaches a diner | the item row and its variants share that transaction | `property 4: …` (2 tests) |
+
+Properties 3 and 4 are tested with a **real** mid-write failure, not a mock: the
+request names a variant id that already belongs to another item, so the rename,
+the variant delete and the variant update all reach Postgres before the insert
+trips the primary key. The assertion is that `GET /api/menu` comes back
+byte-for-byte identical (`publicMenuSnapshot()`).
 
 Do not add `it.skip` to close a gate. A skipped test is a lie in a green suite.

@@ -11,6 +11,9 @@
 
 import { resolveTestDatabaseUrl } from './database';
 
+/** The owner-editor credential the suite runs with. */
+export const TEST_OWNER_MENU_TOKEN = 'test-owner-menu-token';
+
 process.env.NODE_ENV = 'test';
 process.env.DATABASE_URL = resolveTestDatabaseUrl();
 
@@ -21,3 +24,9 @@ process.env.DATABASE_URL = resolveTestDatabaseUrl();
 delete process.env.KITCHEN_TOKEN;
 delete process.env.STRIPE_SECRET_KEY;
 delete process.env.STRIPE_WEBHOOK_SECRET;
+
+// The owner's menu editor fails CLOSED when its credential is unset (unlike the
+// kitchen guard, which skips its check) — so the suite has to *set* one in
+// order to exercise the routes at all. `test/admin-menu.test.ts` clears it
+// again, in a controlled way, for the fail-closed test itself.
+process.env.OWNER_MENU_TOKEN = TEST_OWNER_MENU_TOKEN;

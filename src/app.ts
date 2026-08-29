@@ -13,6 +13,7 @@ import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 
 import { config, stripeEnabled } from './config.js';
 import { HttpError } from './lib/http-errors.js';
+import { adminMenuRoutes } from './routes/admin-menu.js';
 import { kitchenRoutes } from './routes/kitchen.js';
 import { menuRoutes } from './routes/menu.js';
 import { orderRoutes } from './routes/orders.js';
@@ -50,6 +51,7 @@ export async function buildApp(
   await app.register(orderRoutes);
   await app.register(paymentRoutes);
   await app.register(kitchenRoutes);
+  await app.register(adminMenuRoutes);
 
   return app;
 }

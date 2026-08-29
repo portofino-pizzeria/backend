@@ -39,6 +39,16 @@ export const config = {
   // Shared secret for the kitchen dashboard. Empty disables the check (dev).
   kitchenToken: env('KITCHEN_TOKEN'),
 
+  // Shared secret for the owner's menu editor (/api/admin/menu/*).
+  //
+  // Deliberately NOT `kitchenToken`, and deliberately NOT skippable when empty.
+  // The kitchen guard protects a screen that is already behind the counter and
+  // turns itself off in dev; this one guards the surface that writes the
+  // allergens and prices a diner reads, from a phone, after close. Empty means
+  // every admin write is REFUSED — see `requireOwnerAuth` in
+  // routes/admin-menu.ts. Set it to enable the editor.
+  ownerMenuToken: env('OWNER_MENU_TOKEN'),
+
   // Domain constants. Money is always an integer number of cents.
   currency: 'EUR',
   deliveryFeeCents: 299,

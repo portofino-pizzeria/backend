@@ -61,6 +61,23 @@ export interface Menu {
   allergenLegend: AllergenLegendEntry[];
 }
 
+/** An item as the owner's editor sees it: everything a diner sees, plus the
+ *  two fields that decide whether a diner sees it at all. `available: false`
+ *  items are absent from `Menu` and present here — the editor cannot bring an
+ *  item back that it cannot see. */
+export interface AdminMenuItem extends MenuItem {
+  available: boolean;
+  sortOrder: number;
+}
+
+/** The GET /api/admin/menu payload — the same three collections as `Menu`, so
+ *  the editor renders the domain shapes the public API already defines. */
+export interface AdminMenu {
+  categories: MenuCategory[];
+  items: AdminMenuItem[];
+  allergenLegend: AllergenLegendEntry[];
+}
+
 export type PaymentProvider = 'stripe' | 'paypal' | 'mock';
 
 export type OrderStatus =
