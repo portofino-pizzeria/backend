@@ -7,6 +7,7 @@
     "Every category was captured by a single rate-limited static GET of its own page, cross-checked against the site's WPPizza taxonomy archives and its wp-sitemap-posts-wppizza-1.xml.",
     "Hähnchenbrust, Rumpsteak and Dessert have ZERO published items: their nav pages render an empty entry-content, their WPPizza taxonomy archives return no posts, a site search for each term returns no results, and none of the three terms appears in the taxonomy sitemap. They are empty on the server, not withheld from a static fetch.",
     "German is authoritative. The site publishes NO English text for any item, category or allergen label, so nameEn/descriptionEn/labelEn are null throughout except allergen labelEn, which is taken from the site's own CSS semantic token (wppizza-allergen-<token>) and never translated by the capture.",
+    "sortOrder is the position within the category AS THE SITE RENDERS IT, which is NOT numeric order: WPPizza emits Pizza as 6,5,4,3,2,1,7,8,... and Mexikanisch as 101,102,108,107,106,111,... The capture preserves what a diner sees; re-sorting by item number is a presentation choice for the consuming app, not a correction to the source.",
     "Prices are transcribed exactly as rendered (German decimal comma) and converted to integer cents. No rounding, no inference; the word 'ab' appears only inside descriptions, never in a price."
   ],
   "availability": {
@@ -48,70 +49,70 @@
     {
       "code": "V",
       "labelDe": "Vegetarisch",
-      "labelEn": null,
+      "labelEn": "Vegetarian",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "a",
       "labelDe": "Gluten",
-      "labelEn": null,
+      "labelEn": "Gluten",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "b",
       "labelDe": "Eier",
-      "labelEn": null,
+      "labelEn": "Eggs",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "c",
       "labelDe": "Milch",
-      "labelEn": null,
+      "labelEn": "Milk",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "d",
       "labelDe": "Senf",
-      "labelEn": null,
+      "labelEn": "Mustard",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "e",
       "labelDe": "Sellerie",
-      "labelEn": null,
+      "labelEn": "Celery",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "i",
       "labelDe": "Erdnüsse",
-      "labelEn": null,
+      "labelEn": "Peanuts",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "j",
       "labelDe": "Krebstiere",
-      "labelEn": null,
+      "labelEn": "Crustaceans",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "k",
       "labelDe": "Fisch",
-      "labelEn": null,
+      "labelEn": "Fish",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
     {
       "code": "n",
       "labelDe": "Weichtiere",
-      "labelEn": null,
+      "labelEn": "Molluscs",
       "provenance": "observed",
       "source": "title attribute + on-page legend block rendered by the site"
     },
@@ -1510,7 +1511,7 @@
         "3"
       ],
       "available": true,
-      "sortOrder": 30,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -1541,7 +1542,7 @@
         "k"
       ],
       "available": true,
-      "sortOrder": 31,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -1575,7 +1576,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 32,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -1607,7 +1608,7 @@
         "2"
       ],
       "available": true,
-      "sortOrder": 33,
+      "sortOrder": 4,
       "provenance": "observed",
       "variants": [
         {
@@ -1635,7 +1636,7 @@
         "V"
       ],
       "available": true,
-      "sortOrder": 34,
+      "sortOrder": 5,
       "provenance": "observed",
       "variants": [
         {
@@ -1664,7 +1665,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 35,
+      "sortOrder": 6,
       "provenance": "observed",
       "variants": [
         {
@@ -1696,7 +1697,7 @@
         "b"
       ],
       "available": true,
-      "sortOrder": 36,
+      "sortOrder": 7,
       "provenance": "observed",
       "variants": [
         {
@@ -1718,13 +1719,13 @@
       "id": "antipasti-misto-fuer-1-person-vorspeisenteller",
       "number": null,
       "categoryId": "antipasti-misto",
-      "name": "• für 1 Person Vorspeisenteller",
+      "name": "für 1 Person Vorspeisenteller",
       "description": "mit versch. Gemüse der Saison und Parmaschinken",
       "nameEn": null,
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 37,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -1744,13 +1745,13 @@
       "id": "antipasti-misto-fuer-2-personen-vorspeisenteller",
       "number": null,
       "categoryId": "antipasti-misto",
-      "name": "• für 2 Personen Vorspeisenteller",
+      "name": "für 2 Personen Vorspeisenteller",
       "description": "mit versch. Gemüse der Saison und Parmaschinken",
       "nameEn": null,
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 38,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -1779,7 +1780,7 @@
         "k"
       ],
       "available": true,
-      "sortOrder": 39,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -1805,7 +1806,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 40,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -1831,7 +1832,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 41,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -1859,7 +1860,7 @@
         "V"
       ],
       "available": true,
-      "sortOrder": 42,
+      "sortOrder": 4,
       "provenance": "observed",
       "variants": [
         {
@@ -1890,7 +1891,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 43,
+      "sortOrder": 5,
       "provenance": "observed",
       "variants": [
         {
@@ -1920,7 +1921,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 44,
+      "sortOrder": 6,
       "provenance": "observed",
       "variants": [
         {
@@ -1950,7 +1951,7 @@
         "n"
       ],
       "available": true,
-      "sortOrder": 45,
+      "sortOrder": 7,
       "provenance": "observed",
       "variants": [
         {
@@ -1981,7 +1982,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 46,
+      "sortOrder": 8,
       "provenance": "observed",
       "variants": [
         {
@@ -2012,7 +2013,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 47,
+      "sortOrder": 9,
       "provenance": "observed",
       "variants": [
         {
@@ -2038,7 +2039,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 48,
+      "sortOrder": 10,
       "provenance": "observed",
       "variants": [
         {
@@ -2068,7 +2069,7 @@
         "3"
       ],
       "available": true,
-      "sortOrder": 49,
+      "sortOrder": 11,
       "provenance": "observed",
       "variants": [
         {
@@ -2099,7 +2100,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 50,
+      "sortOrder": 12,
       "provenance": "observed",
       "variants": [
         {
@@ -2129,7 +2130,7 @@
         "9"
       ],
       "available": true,
-      "sortOrder": 51,
+      "sortOrder": 13,
       "provenance": "observed",
       "variants": [
         {
@@ -2157,7 +2158,7 @@
         "V"
       ],
       "available": true,
-      "sortOrder": 52,
+      "sortOrder": 14,
       "provenance": "observed",
       "variants": [
         {
@@ -2187,7 +2188,7 @@
         "9"
       ],
       "available": true,
-      "sortOrder": 53,
+      "sortOrder": 15,
       "provenance": "observed",
       "variants": [
         {
@@ -2216,7 +2217,7 @@
         "6"
       ],
       "available": true,
-      "sortOrder": 54,
+      "sortOrder": 16,
       "provenance": "observed",
       "variants": [
         {
@@ -2244,7 +2245,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 55,
+      "sortOrder": 17,
       "provenance": "observed",
       "variants": [
         {
@@ -2274,7 +2275,7 @@
         "6"
       ],
       "available": true,
-      "sortOrder": 56,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -2305,7 +2306,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 57,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -2333,7 +2334,7 @@
         "a"
       ],
       "available": true,
-      "sortOrder": 58,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -2365,7 +2366,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 59,
+      "sortOrder": 4,
       "provenance": "observed",
       "variants": [
         {
@@ -2397,7 +2398,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 60,
+      "sortOrder": 5,
       "provenance": "observed",
       "variants": [
         {
@@ -2427,7 +2428,7 @@
         "9"
       ],
       "available": true,
-      "sortOrder": 61,
+      "sortOrder": 6,
       "provenance": "observed",
       "variants": [
         {
@@ -2458,7 +2459,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 62,
+      "sortOrder": 7,
       "provenance": "observed",
       "variants": [
         {
@@ -2486,7 +2487,7 @@
         "V"
       ],
       "available": true,
-      "sortOrder": 63,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -2512,7 +2513,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 64,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -2540,7 +2541,7 @@
         "i"
       ],
       "available": true,
-      "sortOrder": 65,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -2568,7 +2569,7 @@
         "n"
       ],
       "available": true,
-      "sortOrder": 66,
+      "sortOrder": 4,
       "provenance": "observed",
       "variants": [
         {
@@ -2598,7 +2599,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 67,
+      "sortOrder": 5,
       "provenance": "observed",
       "variants": [
         {
@@ -2626,7 +2627,7 @@
         "k"
       ],
       "available": true,
-      "sortOrder": 68,
+      "sortOrder": 6,
       "provenance": "observed",
       "variants": [
         {
@@ -2652,7 +2653,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 69,
+      "sortOrder": 7,
       "provenance": "observed",
       "variants": [
         {
@@ -2682,7 +2683,7 @@
         "3"
       ],
       "available": true,
-      "sortOrder": 70,
+      "sortOrder": 8,
       "provenance": "observed",
       "variants": [
         {
@@ -2711,7 +2712,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 71,
+      "sortOrder": 9,
       "provenance": "observed",
       "variants": [
         {
@@ -2737,7 +2738,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 72,
+      "sortOrder": 10,
       "provenance": "observed",
       "variants": [
         {
@@ -2767,7 +2768,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 73,
+      "sortOrder": 11,
       "provenance": "observed",
       "variants": [
         {
@@ -2798,7 +2799,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 74,
+      "sortOrder": 12,
       "provenance": "observed",
       "variants": [
         {
@@ -2830,7 +2831,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 75,
+      "sortOrder": 13,
       "provenance": "observed",
       "variants": [
         {
@@ -2859,7 +2860,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 76,
+      "sortOrder": 14,
       "provenance": "observed",
       "variants": [
         {
@@ -2888,7 +2889,7 @@
         "1"
       ],
       "available": true,
-      "sortOrder": 77,
+      "sortOrder": 15,
       "provenance": "observed",
       "variants": [
         {
@@ -2914,7 +2915,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 78,
+      "sortOrder": 16,
       "provenance": "observed",
       "variants": [
         {
@@ -2940,7 +2941,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 79,
+      "sortOrder": 17,
       "provenance": "observed",
       "variants": [
         {
@@ -2972,7 +2973,7 @@
         "d"
       ],
       "available": true,
-      "sortOrder": 80,
+      "sortOrder": 18,
       "provenance": "observed",
       "variants": [
         {
@@ -3004,7 +3005,7 @@
         "d"
       ],
       "available": true,
-      "sortOrder": 81,
+      "sortOrder": 19,
       "provenance": "observed",
       "variants": [
         {
@@ -3030,7 +3031,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 82,
+      "sortOrder": 20,
       "provenance": "observed",
       "variants": [
         {
@@ -3056,7 +3057,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 83,
+      "sortOrder": 21,
       "provenance": "observed",
       "variants": [
         {
@@ -3085,7 +3086,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 84,
+      "sortOrder": 22,
       "provenance": "observed",
       "variants": [
         {
@@ -3113,7 +3114,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 85,
+      "sortOrder": 23,
       "provenance": "observed",
       "variants": [
         {
@@ -3141,7 +3142,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 86,
+      "sortOrder": 24,
       "provenance": "observed",
       "variants": [
         {
@@ -3169,7 +3170,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 87,
+      "sortOrder": 25,
       "provenance": "observed",
       "variants": [
         {
@@ -3197,7 +3198,7 @@
         "V"
       ],
       "available": true,
-      "sortOrder": 88,
+      "sortOrder": 26,
       "provenance": "observed",
       "variants": [
         {
@@ -3225,7 +3226,7 @@
         "V"
       ],
       "available": true,
-      "sortOrder": 89,
+      "sortOrder": 27,
       "provenance": "observed",
       "variants": [
         {
@@ -3254,7 +3255,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 90,
+      "sortOrder": 28,
       "provenance": "observed",
       "variants": [
         {
@@ -3282,7 +3283,7 @@
         "*"
       ],
       "available": true,
-      "sortOrder": 91,
+      "sortOrder": 29,
       "provenance": "observed",
       "variants": [
         {
@@ -3311,7 +3312,7 @@
         "b"
       ],
       "available": true,
-      "sortOrder": 92,
+      "sortOrder": 30,
       "provenance": "observed",
       "variants": [
         {
@@ -3339,7 +3340,7 @@
         "V"
       ],
       "available": true,
-      "sortOrder": 93,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -3373,7 +3374,7 @@
         "k"
       ],
       "available": true,
-      "sortOrder": 94,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -3413,7 +3414,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 95,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -3454,7 +3455,7 @@
         "9"
       ],
       "available": true,
-      "sortOrder": 96,
+      "sortOrder": 4,
       "provenance": "observed",
       "variants": [
         {
@@ -3489,7 +3490,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 97,
+      "sortOrder": 5,
       "provenance": "observed",
       "variants": [
         {
@@ -3523,7 +3524,7 @@
         "V"
       ],
       "available": true,
-      "sortOrder": 98,
+      "sortOrder": 6,
       "provenance": "observed",
       "variants": [
         {
@@ -3558,7 +3559,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 99,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -3587,7 +3588,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 100,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -3616,7 +3617,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 101,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -3644,7 +3645,7 @@
         "k"
       ],
       "available": true,
-      "sortOrder": 102,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -3670,7 +3671,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 103,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -3702,7 +3703,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 104,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -3738,7 +3739,7 @@
         "e"
       ],
       "available": true,
-      "sortOrder": 105,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -3770,7 +3771,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 106,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -3802,7 +3803,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 107,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -3837,7 +3838,7 @@
         "5"
       ],
       "available": true,
-      "sortOrder": 108,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -3869,7 +3870,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 109,
+      "sortOrder": 4,
       "provenance": "observed",
       "variants": [
         {
@@ -3901,7 +3902,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 110,
+      "sortOrder": 5,
       "provenance": "observed",
       "variants": [
         {
@@ -3937,7 +3938,7 @@
         "e"
       ],
       "available": true,
-      "sortOrder": 111,
+      "sortOrder": 6,
       "provenance": "observed",
       "variants": [
         {
@@ -3971,7 +3972,7 @@
         "c"
       ],
       "available": true,
-      "sortOrder": 112,
+      "sortOrder": 7,
       "provenance": "observed",
       "variants": [
         {
@@ -4007,7 +4008,7 @@
         "e"
       ],
       "available": true,
-      "sortOrder": 113,
+      "sortOrder": 8,
       "provenance": "observed",
       "variants": [
         {
@@ -4039,7 +4040,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 114,
+      "sortOrder": 9,
       "provenance": "observed",
       "variants": [
         {
@@ -4075,7 +4076,7 @@
         "d"
       ],
       "available": true,
-      "sortOrder": 115,
+      "sortOrder": 10,
       "provenance": "observed",
       "variants": [
         {
@@ -4113,7 +4114,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 116,
+      "sortOrder": 11,
       "provenance": "observed",
       "variants": [
         {
@@ -4151,7 +4152,7 @@
         "4"
       ],
       "available": true,
-      "sortOrder": 117,
+      "sortOrder": 12,
       "provenance": "observed",
       "variants": [
         {
@@ -4183,7 +4184,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 118,
+      "sortOrder": 13,
       "provenance": "observed",
       "variants": [
         {
@@ -4218,7 +4219,7 @@
         "7"
       ],
       "available": true,
-      "sortOrder": 119,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -4247,7 +4248,7 @@
         "3"
       ],
       "available": true,
-      "sortOrder": 120,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -4275,7 +4276,7 @@
         "2"
       ],
       "available": true,
-      "sortOrder": 121,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -4301,7 +4302,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 122,
+      "sortOrder": 4,
       "provenance": "observed",
       "variants": [
         {
@@ -4327,7 +4328,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 123,
+      "sortOrder": 5,
       "provenance": "observed",
       "variants": [
         {
@@ -4353,7 +4354,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 124,
+      "sortOrder": 6,
       "provenance": "observed",
       "variants": [
         {
@@ -4379,7 +4380,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 125,
+      "sortOrder": 7,
       "provenance": "observed",
       "variants": [
         {
@@ -4405,7 +4406,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 126,
+      "sortOrder": 8,
       "provenance": "observed",
       "variants": [
         {
@@ -4431,7 +4432,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 127,
+      "sortOrder": 9,
       "provenance": "observed",
       "variants": [
         {
@@ -4448,7 +4449,7 @@
       }
     },
     {
-      "id": "getraenke-wein-fl",
+      "id": "getraenke-wein-fl-0-7-l",
       "number": null,
       "categoryId": "getraenke",
       "name": "Wein Fl.",
@@ -4457,11 +4458,11 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 128,
+      "sortOrder": 10,
       "provenance": "observed",
       "variants": [
         {
-          "id": "getraenke-wein-fl-normal",
+          "id": "getraenke-wein-fl-0-7-l-normal",
           "label": "normal",
           "sortOrder": 1,
           "priceCents": 750
@@ -4483,7 +4484,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 129,
+      "sortOrder": 11,
       "provenance": "observed",
       "variants": [
         {
@@ -4509,7 +4510,7 @@
       "descriptionEn": null,
       "allergenCodes": [],
       "available": true,
-      "sortOrder": 130,
+      "sortOrder": 1,
       "provenance": "observed",
       "variants": [
         {
@@ -4537,7 +4538,7 @@
         "a"
       ],
       "available": true,
-      "sortOrder": 131,
+      "sortOrder": 2,
       "provenance": "observed",
       "variants": [
         {
@@ -4566,7 +4567,7 @@
         "b"
       ],
       "available": true,
-      "sortOrder": 132,
+      "sortOrder": 3,
       "provenance": "observed",
       "variants": [
         {
@@ -4594,7 +4595,7 @@
         "a"
       ],
       "available": true,
-      "sortOrder": 133,
+      "sortOrder": 4,
       "provenance": "observed",
       "variants": [
         {
@@ -4622,7 +4623,7 @@
         "a"
       ],
       "available": true,
-      "sortOrder": 134,
+      "sortOrder": 5,
       "provenance": "observed",
       "variants": [
         {
@@ -4650,7 +4651,7 @@
         "a"
       ],
       "available": true,
-      "sortOrder": 135,
+      "sortOrder": 6,
       "provenance": "observed",
       "variants": [
         {
@@ -4678,7 +4679,7 @@
         "a"
       ],
       "available": true,
-      "sortOrder": 136,
+      "sortOrder": 7,
       "provenance": "observed",
       "variants": [
         {
@@ -4707,7 +4708,7 @@
         "b"
       ],
       "available": true,
-      "sortOrder": 137,
+      "sortOrder": 8,
       "provenance": "observed",
       "variants": [
         {
@@ -4735,7 +4736,7 @@
         "a"
       ],
       "available": true,
-      "sortOrder": 138,
+      "sortOrder": 9,
       "provenance": "observed",
       "variants": [
         {
