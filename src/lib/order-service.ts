@@ -5,6 +5,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import { config } from '../config.js';
 import { db } from '../db/client.js';
 import {
+  menuItemVariants,
   menuItems,
   orderLines,
   orders,
@@ -31,7 +32,9 @@ export function serializeOrder(row: OrderRow, lines: OrderLineRow[]): Order {
     id: row.id,
     lines: lines.map((l) => ({
       menuItemId: l.menuItemId,
+      variantId: l.variantId,
       name: l.name,
+      variantLabel: l.variantLabel,
       unitPrice: l.unitPrice,
       quantity: l.quantity,
     })),
@@ -66,7 +69,7 @@ export async function getOrder(id: string): Promise<Order | null> {
 }
 
 export interface CreateOrderInput {
-  items: { menuItemId: string; quantity: number }[];
+  items: { menuItemId: string; variantId: string; quantity: number }[];
   customer?: CustomerInfo;
 }
 
@@ -76,27 +79,46 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
 
   for (const it of items) {
     if (!it.menuItemId) throw badRequest('Each item needs a menuItemId.');
+    if (!it.variantId) {
+      throw badRequest(`Each item needs a variantId (${it.menuItemId}).`);
+    }
     if (!Number.isInteger(it.quantity) || it.quantity < 1) {
       throw badRequest(`Invalid quantity for ${it.menuItemId}.`);
     }
   }
 
-  // Look up real prices from the DB — never trust client-supplied prices.
+  // Look up real prices from the DB — never trust client-supplied prices. The
+  // price lives on the variant, so an order that does not name a resolvable
+  // variant of the item it claims is rejected outright; there is no fallback
+  // price to fall back to, and inventing one would charge a diner the wrong
+  // amount.
   const ids = [...new Set(items.map((i) => i.menuItemId))];
-  const menu = await db
-    .select()
-    .from(menuItems)
-    .where(inArray(menuItems.id, ids));
+  const variantIds = [...new Set(items.map((i) => i.variantId))];
+  const [menu, variants] = await Promise.all([
+    db.select().from(menuItems).where(inArray(menuItems.id, ids)),
+    db
+      .select()
+      .from(menuItemVariants)
+      .where(inArray(menuItemVariants.id, variantIds)),
+  ]);
   const byId = new Map(menu.map((m) => [m.id, m]));
+  const variantById = new Map(variants.map((v) => [v.id, v]));
 
   const lines = items.map((it) => {
     const m = byId.get(it.menuItemId);
     if (!m) throw badRequest(`Unknown menu item: ${it.menuItemId}.`);
     if (!m.available) throw badRequest(`${m.name} is currently unavailable.`);
+    const v = variantById.get(it.variantId);
+    if (!v) throw badRequest(`Unknown variant: ${it.variantId}.`);
+    if (v.itemId !== m.id) {
+      throw badRequest(`Variant ${v.id} does not belong to ${m.name}.`);
+    }
     return {
       menuItemId: m.id,
+      variantId: v.id,
       name: m.name,
-      unitPrice: m.price,
+      variantLabel: v.label,
+      unitPrice: v.priceCents,
       quantity: it.quantity,
     };
   });

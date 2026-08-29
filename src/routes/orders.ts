@@ -4,11 +4,22 @@ import { z } from 'zod';
 import { badRequest, notFound } from '../lib/http-errors.js';
 import { createOrder, getOrder } from '../lib/order-service.js';
 
+// A line names an item *and* the variant of it being bought. Prices live on
+// the variant, so an item without a variant is not something the server can
+// price — the door rejects it here rather than letting order-service guess.
 const createOrderSchema = z.object({
   items: z
     .array(
       z.object({
-        menuItemId: z.string().min(1),
+        menuItemId: z
+          .string({ required_error: 'Each item needs a menuItemId.' })
+          .min(1, 'Each item needs a menuItemId.'),
+        variantId: z
+          .string({
+            required_error:
+              'Each item needs a variantId (which size or variant is being ordered).',
+          })
+          .min(1, 'Each item needs a variantId.'),
         quantity: z.number().int().min(1).max(50),
       }),
     )

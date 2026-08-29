@@ -8,6 +8,20 @@
       "when": 1784323070834,
       "tag": "0000_parallel_preak",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787966703793,
+      "tag": "0001_drop_single_price_menu_shape",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787968035210,
+      "tag": "0002_menu_variants_categories_allergens",
+      "breakpoints": true
     }
   ]
 }
