@@ -1,3 +1,8 @@
+-- Legacy rows predate categories/variants entirely (no category_id to
+-- backfill to) and are wholesale-replaced by seedMenu() on every boot anyway
+-- (see seed.ts) — order_lines keeps its own plain-text snapshot of item name/
+-- price, not a FK, so historical orders are unaffected by clearing this table.
+DELETE FROM "menu_items";--> statement-breakpoint
 ALTER TABLE "menu_items" ADD COLUMN "number" text;--> statement-breakpoint
 ALTER TABLE "menu_items" ADD COLUMN "name_en" text;--> statement-breakpoint
 ALTER TABLE "menu_items" ADD COLUMN "description_en" text;--> statement-breakpoint

@@ -21,8 +21,11 @@ CREATE TABLE IF NOT EXISTS "menu_item_variants" (
 );
 --> statement-breakpoint
 ALTER TABLE "menu_items" ALTER COLUMN "description" SET DEFAULT '';--> statement-breakpoint
-ALTER TABLE "order_lines" ADD COLUMN "variant_id" text NOT NULL;--> statement-breakpoint
-ALTER TABLE "order_lines" ADD COLUMN "variant_label" text NOT NULL;--> statement-breakpoint
+ALTER TABLE "order_lines" ADD COLUMN "variant_id" text;--> statement-breakpoint
+ALTER TABLE "order_lines" ADD COLUMN "variant_label" text;--> statement-breakpoint
+UPDATE "order_lines" SET "variant_id" = "menu_item_id", "variant_label" = 'Standard' WHERE "variant_id" IS NULL;--> statement-breakpoint
+ALTER TABLE "order_lines" ALTER COLUMN "variant_id" SET NOT NULL;--> statement-breakpoint
+ALTER TABLE "order_lines" ALTER COLUMN "variant_label" SET NOT NULL;--> statement-breakpoint
 DO $$ BEGIN
  ALTER TABLE "menu_item_variants" ADD CONSTRAINT "menu_item_variants_item_id_menu_items_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."menu_items"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
