@@ -56,9 +56,83 @@ built-in confirmation page that marks the order paid — the full order → pay 
 confirmation flow works with zero external setup. Add Stripe **test** keys to
 `.env` to exercise real hosted Stripe Checkout (test cards, no real money).
 
+## CI
+
+`.github/workflows/ci.yml` — typecheck plus the full suite, on every pull
+request and every push to `master`.
+
+The suite is integration-shaped (pricing, availability and allergens are all
+resolved in the database), so `vitest.config.ts`'s `globalSetup` refuses to run
+without a live Postgres rather than skipping. CI therefore runs a
+`services: postgres` container and points the suite at it with
+`TEST_DATABASE_URL`. `drizzle/*.sql` is applied by `globalSetup` itself, from
+zero, on every run — there is no separate migration step, deliberately.
+
 ## Deploy
 
 Built for a container runtime (AWS App Runner) + managed Postgres (Aurora
 Serverless v2), provisioned by the Terraform in `../infra`. `npm run build`
 emits `dist/`; `npm start` runs it. Set the env vars from `.env.example` in the
 service configuration.
+
+`.github/workflows/deploy.yml` ships it: on a push to `master` (or a
+`workflow_dispatch` naming an older `sha`, which is how you roll back — a
+workflow *re-run* replays the same commit and is not a rollback), it runs CI,
+builds the image, pushes `:<sha>` then `:latest` to ECR, and then **proves the
+push is live**.
+
+That proof is the part worth reading. The service is already `RUNNING` before
+the push and App Runner's auto-deploy is asynchronous, so polling for `RUNNING`
+observes the *old* service and passes; an identical image digest fires no
+deployment at all and that poll still passes. Instead the workflow snapshots
+the service's deployment operations before the push, waits for one that was not
+in that snapshot, waits for it to reach `SUCCEEDED`, and only then asserts that
+`GET /api/health` reports the exact commit it built.
+
+### The `commit` field
+
+`GET /api/health` returns `commit` — the git sha the image was built from,
+baked in at build time (`Dockerfile`: `ARG COMMIT_SHA` → `ENV COMMIT_SHA`), not
+supplied at run time. A build without the arg reports `"unknown"`: honest, and
+never a crash. It is also what makes each commit produce a distinct image
+digest, which is what makes auto-deploy fire at all.
+
+```bash
+docker build --build-arg COMMIT_SHA="$(git rev-parse HEAD)" -t portofino-backend .
+```
+
+### Deploy configuration
+
+Repository → Settings → Secrets and variables → Actions → **Variables**:
+
+| Variable | Required | Default |
+|---|---|---|
+| `AWS_ROLE_ARN` | yes | — (`portofino-ci-backend`, assumed via GitHub OIDC) |
+| `APPRUNNER_SERVICE_ARN` | yes | — |
+| `AWS_REGION` | no | `eu-central-1` |
+| `ECR_REPOSITORY` | no | `portofino-production-backend` |
+
+Optional secret `DEPLOY_ALERT_WEBHOOK` — a Slack/Teams incoming webhook that a
+failed deploy POSTs to. Without it a failed deploy notifies nobody, which is
+the same "invisible" defect as a stale site, just moved.
+
+Nothing above is hardcoded in the workflow: both ARNs embed the AWS account id,
+and a workflow copy of an infrastructure value is a silent drift channel.
+
+### The human in the loop
+
+Migrations run on **container boot** from `drizzle/` (`src/index.ts`), so a
+backend deploy applies schema changes to production Aurora with no way back
+once data is written under the new schema. The deploy job therefore runs
+through the `production-backend` GitHub Environment with a **required
+reviewer** — automatic to the door, human through it. Its first step verifies
+that protection actually exists and fails closed if it does not, or if it
+cannot tell.
+
+> ⚠️ **The required reviewer is not configured yet, so deploys currently stop
+> at that first step.** The environment exists and is restricted to `master`,
+> but required reviewers on a *private* repository need a GitHub Team or
+> Enterprise plan and `portofino-pizzeria` is on Free (the API answers `422
+> "Please ensure the billing plan supports the required reviewers protection
+> rule"`). Upgrade the plan, then add a reviewer under Settings → Environments
+> → `production-backend`.

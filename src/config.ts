@@ -8,8 +8,24 @@ function env(key: string, fallback = ''): string {
 
 const port = Number(env('PORT', '4000'));
 
+/**
+ * The git commit this image was built from.
+ *
+ * Baked into the image at BUILD time (`Dockerfile`: `ARG COMMIT_SHA` ->
+ * `ENV COMMIT_SHA`), not supplied at run time — the point is to identify the
+ * artifact, and a value the platform could set per-deploy would not do that.
+ *
+ * Degrades to `'unknown'` rather than throwing: a local `docker build`, a
+ * `npm run dev`, or a build that simply forgot the `--build-arg` must still
+ * boot and still serve `/api/health`. A deploy pipeline asserting on this
+ * field treats `'unknown'` as "not the commit I pushed" and fails there, which
+ * is the right place for that failure — not at container start.
+ */
+const commit = env('COMMIT_SHA', 'unknown');
+
 export const config = {
   port,
+  commit,
 
   databaseUrl: env(
     'DATABASE_URL',

@@ -5,3 +5,5 @@ dist
 *.log
 .git
 .gitignore
+.github
+test

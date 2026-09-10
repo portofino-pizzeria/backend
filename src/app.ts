@@ -42,8 +42,13 @@ export async function buildApp(
     reply.status(status).send({ error: err.message ?? 'Internal error' });
   });
 
+  // The deploy pipeline's only proof that the artifact it just pushed is the
+  // one now serving traffic: `commit` is baked into the image at build time,
+  // so a workflow can assert on it after a deploy. `'unknown'` when the image
+  // was built without the build arg (see config.ts) — honest, never a crash.
   app.get('/api/health', async () => ({
     status: 'ok',
+    commit: config.commit,
     stripe: stripeEnabled ? 'live-keys' : 'mock',
   }));
 

@@ -1,0 +1,435 @@
+# Backend deploy — build, push to ECR, and PROVE the pushed artifact is live.
+#
+# ---------------------------------------------------------------------------
+# Why the verification below is shaped the way it is
+# ---------------------------------------------------------------------------
+# App Runner's ECR auto-deploy is asynchronous, and the service is already
+# `RUNNING` before we push anything. So the two obvious checks are both
+# vacuous:
+#
+#   * polling `DescribeService` for `Status == RUNNING` observes the OLD
+#     service and passes immediately, before the new revision exists;
+#   * an identical image digest fires no deployment at all — and that same poll
+#     still passes, reporting success for a deploy that never happened.
+#
+# Instead: snapshot the deployment operations BEFORE the push, poll
+# `ListOperations` for one that is not in that snapshot, wait for it to reach
+# SUCCEEDED, and only then assert that `GET /api/health` reports the exact
+# commit this run built. Nothing short of that last assertion distinguishes
+# "a deployment succeeded" from "the code I pushed is serving traffic".
+#
+# ---------------------------------------------------------------------------
+# Why there is a human in the loop
+# ---------------------------------------------------------------------------
+# `src/index.ts` runs `drizzle/` migrations on container boot. An automatic
+# backend deploy therefore applies schema changes to production Aurora with no
+# gate and no way back once data is written under the new schema. The `deploy`
+# job runs through a GitHub Environment with a REQUIRED REVIEWER: automatic to
+# the door, human through it. The `Verify the environment gate` step below
+# fails closed if that protection is missing, because an Environment that does
+# not exist is created silently and unprotected on first use.
+#
+# >> AS SHIPPED, THAT REVIEWER DOES NOT EXIST YET AND THIS WORKFLOW THEREFORE
+# >> REFUSES TO DEPLOY. The `production-backend` environment has been created
+# >> and restricted to the `master` branch, but `portofino-pizzeria` is a FREE
+# >> organisation and required reviewers on a PRIVATE repository need Team or
+# >> Enterprise:
+# >>
+# >>   PUT .../environments/production-backend  {"reviewers":[...]}
+# >>   422 "Failed to create the environment protection rule. Please ensure the
+# >>        billing plan supports the required reviewers protection rule."
+# >>
+# >> Upgrade the org plan (or make the repo public, which is not an option
+# >> here), then add a required reviewer under Settings -> Environments ->
+# >> production-backend. Until then every deploy stops at the first step, which
+# >> is the correct behaviour: no reviewer means an unattended migration
+# >> against production Aurora.
+#
+# ---------------------------------------------------------------------------
+# Configuration (repository Settings -> Secrets and variables -> Actions ->
+# Variables). None of these are hardcoded here: the role ARN and the service
+# ARN both embed the AWS account id, and a workflow copy of an infrastructure
+# value is a silent drift channel.
+#
+#   AWS_ROLE_ARN           (required)  arn:aws:iam::<acct>:role/portofino-ci-backend
+#   APPRUNNER_SERVICE_ARN  (required)  arn:aws:apprunner:<region>:<acct>:service/portofino-production-api/<id>
+#   AWS_REGION             (optional)  defaults to eu-central-1
+#   ECR_REPOSITORY         (optional)  defaults to portofino-production-backend
+#
+# `APPRUNNER_SERVICE_ARN` is a variable rather than something looked up by
+# name because the `portofino-ci-backend` role is granted `DescribeService` and
+# `ListOperations` only — deliberately not `ListServices` — and both of those
+# take a service ARN. The service id inside the ARN is not derivable.
+# ---------------------------------------------------------------------------
+
+name: Deploy backend
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: >-
+          Commit to deploy. Leave empty to deploy the tip of the branch this
+          run was started from. Set it to roll back — re-running a workflow
+          replays the same commit, so a re-run is not a rollback.
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # NOT cancel-in-progress. Cancelling mid-flight would abandon a deployment
+  # App Runner is already applying — including its migrations — with nothing
+  # left watching it.
+  group: deploy-backend-production
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Which commit are we shipping? Resolved once, so the tests, the image tag and
+  # the health assertion can never disagree about it.
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: Resolve target commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Narrower than the workflow default: this job has no business holding an
+    # OIDC token it never exchanges.
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a dispatch may name an older commit, and a shallow
+          # clone would not contain it.
+          fetch-depth: 0
+
+      - id: pick
+        env:
+          # Via env, never interpolated into the script body — a workflow input
+          # is attacker-shaped text even on a private repo.
+          REQUESTED_SHA: ${{ inputs.sha }}
+          DEFAULT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REQUESTED_SHA}" ]; then
+            sha="${DEFAULT_SHA}"
+          else
+            # Charset-restricted before it reaches git: quoting stops shell
+            # injection but not a value beginning with "-", which git would
+            # read as an option rather than as a revision.
+            case "${REQUESTED_SHA}" in
+              -*|*[!A-Za-z0-9._/-]*)
+                echo "::error::'${REQUESTED_SHA}' is not a plausible commit, tag or branch."
+                exit 1
+                ;;
+            esac
+            if ! sha="$(git rev-parse --verify --quiet "${REQUESTED_SHA}^{commit}")"; then
+              echo "::error::'${REQUESTED_SHA}' is not a commit in this repository."
+              exit 1
+            fi
+          fi
+          echo "Deploying commit ${sha}"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # The gate. Reuses ci.yml rather than restating it, at the resolved commit —
+  # so a rollback dispatch tests the code being rolled back TO.
+  # ---------------------------------------------------------------------------
+  test:
+    name: CI
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+
+  deploy:
+    name: Build, push, verify
+    needs: [resolve, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    # The only job that exchanges an OIDC token for AWS credentials.
+    permissions:
+      id-token: write
+      contents: read
+
+    # The required-reviewer gate. See the header. If this Environment does not
+    # exist, GitHub creates it unprotected on first use — which is exactly what
+    # `Verify the environment gate` refuses to let pass.
+    environment:
+      name: production-backend
+      url: ${{ steps.verify.outputs.health_url }}
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'portofino-production-backend' }}
+      SERVICE_ARN: ${{ vars.APPRUNNER_SERVICE_ARN }}
+      TARGET_SHA: ${{ needs.resolve.outputs.sha }}
+
+    steps:
+      - name: Verify the environment gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT_NAME: production-backend
+        run: |
+          set -euo pipefail
+
+          # Fails closed on BOTH arms: no required reviewer, and "could not
+          # tell". This job applies database migrations to production; an
+          # unverifiable gate is not a passing one. It runs first, so a
+          # misconfiguration costs a red run and nothing else.
+          if ! rules="$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT_NAME}" \
+                          --jq '[.protection_rules[].type] | join(",")' 2>&1)"; then
+            echo "::error::Cannot read the protection rules of environment '${ENVIRONMENT_NAME}': ${rules}"
+            echo "::error::That is UNKNOWN, not 'protected'. Refusing to deploy."
+            exit 1
+          fi
+
+          echo "Protection rules on '${ENVIRONMENT_NAME}': ${rules:-<none>}"
+          case ",${rules}," in
+            *,required_reviewers,*) ;;
+            *)
+              echo "::error::Environment '${ENVIRONMENT_NAME}' has no required reviewer."
+              echo "::error::Backend deploys run drizzle/ migrations against production Aurora on"
+              echo "::error::container boot, so an unattended deploy applies an irreversible schema"
+              echo "::error::change. Add a required reviewer under Settings -> Environments ->"
+              echo "::error::${ENVIRONMENT_NAME}."
+              echo "::error::"
+              echo "::error::Known blocker: required reviewers on a PRIVATE repository need a"
+              echo "::error::GitHub Team/Enterprise plan, and portofino-pizzeria is on Free. The"
+              echo "::error::API returns 422 'Please ensure the billing plan supports the required"
+              echo "::error::reviewers protection rule'. Upgrade the plan, then add the reviewer."
+              exit 1
+              ;;
+          esac
+
+      - name: Check the deployment configuration is present
+        env:
+          ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "::error::Repository variable AWS_ROLE_ARN is not set (the portofino-ci-backend role)."
+            missing=1
+          fi
+          if [ -z "${SERVICE_ARN}" ]; then
+            echo "::error::Repository variable APPRUNNER_SERVICE_ARN is not set."
+            missing=1
+          fi
+          [ "${missing}" -eq 0 ] || exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - name: Assume the CI role (GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-backend-${{ github.run_id }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ---------------------------------------------------------------------
+      # Snapshot BEFORE the push. This is the whole basis of the verification:
+      # "an operation that was not here a moment ago" is clock-free, so it
+      # survives skew between the runner and AWS, and it cannot be satisfied by
+      # a deployment that predates this run.
+      # ---------------------------------------------------------------------
+      - name: Snapshot the App Runner operations that already exist
+        run: |
+          set -euo pipefail
+          aws apprunner list-operations \
+            --service-arn "${SERVICE_ARN}" --max-results 20 \
+            --query "OperationSummaryList[?Type=='START_DEPLOYMENT'||Type=='UPDATE_SERVICE'].Id" \
+            --output text \
+            | tr '\t' '\n' | sed '/^$/d' | sort > "${RUNNER_TEMP}/ops-before.txt"
+          echo "Operations before push:"
+          cat "${RUNNER_TEMP}/ops-before.txt" || true
+
+      - name: Build the image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          repo="${REGISTRY}/${ECR_REPOSITORY}"
+          # COMMIT_SHA is baked in (Dockerfile ARG -> ENV) and surfaces on
+          # /api/health. It is also what makes each commit produce a distinct
+          # image digest, which is what makes App Runner's auto-deploy fire.
+          docker build \
+            --build-arg "COMMIT_SHA=${TARGET_SHA}" \
+            -t "${repo}:${TARGET_SHA}" \
+            -t "${repo}:latest" \
+            .
+          echo "REPO=${repo}" >> "$GITHUB_ENV"
+
+      - name: Push :<sha>, then :latest
+        run: |
+          set -euo pipefail
+          # Order matters. Pushing `:latest` is what App Runner watches, so the
+          # immutable `:<sha>` tag goes first — a rollback target must exist
+          # even if the deployment that follows fails.
+          docker push "${REPO}:${TARGET_SHA}"
+          docker push "${REPO}:latest"
+
+      # ---------------------------------------------------------------------
+      # Verify by operation, then by artifact. Neither alone is enough.
+      # ---------------------------------------------------------------------
+      - name: Wait for the deployment and assert the live commit
+        id: verify
+        run: |
+          set -euo pipefail
+
+          host="$(aws apprunner describe-service --service-arn "${SERVICE_ARN}" \
+                    --query 'Service.ServiceUrl' --output text)"
+          health_url="https://${host}/api/health"
+          echo "health_url=${health_url}" >> "$GITHUB_OUTPUT"
+          echo "Health endpoint: ${health_url}"
+
+          live_commit() {
+            curl -fsS --max-time 15 "${health_url}" 2>/dev/null | jq -r '.commit // ""' 2>/dev/null || true
+          }
+
+          new_ops() {
+            aws apprunner list-operations \
+              --service-arn "${SERVICE_ARN}" --max-results 20 \
+              --query "OperationSummaryList[?Type=='START_DEPLOYMENT'||Type=='UPDATE_SERVICE'].Id" \
+              --output text \
+              | tr '\t' '\n' | sed '/^$/d' | sort \
+              | grep -F -x -v -f "${RUNNER_TEMP}/ops-before.txt" || true
+          }
+
+          # --- 1. An operation that started after our push ---------------------
+          op_id=""
+          for _ in $(seq 1 30); do          # up to 5 minutes
+            op_id="$(new_ops | head -n 1)"
+            [ -n "${op_id}" ] && break
+            sleep 10
+          done
+
+          if [ -z "${op_id}" ]; then
+            # No deployment fired. The ONLY honest reason is an identical image
+            # digest — i.e. this exact commit is already the live one, which a
+            # rollback dispatch can legitimately produce. Anything else is a
+            # deploy that silently did not happen, and must not pass.
+            current="$(live_commit)"
+            if [ "${current}" = "${TARGET_SHA}" ]; then
+              echo "No deployment was triggered: ${TARGET_SHA} is already live (identical image digest)."
+              {
+                echo "### Backend deploy — no-op"
+                echo ""
+                echo "\`${TARGET_SHA}\` was already the running image, so App Runner started no"
+                echo "deployment. Verified live via \`${health_url}\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::error::No App Runner deployment started within 5 minutes of pushing :latest,"
+            echo "::error::and /api/health reports commit '${current:-<unreachable>}', not '${TARGET_SHA}'."
+            echo "::error::Check that auto_deployments_enabled is still true on the service."
+            exit 1
+          fi
+
+          echo "App Runner operation carrying this deploy: ${op_id}"
+
+          # --- 2. That operation has to actually succeed -----------------------
+          status=""
+          for _ in $(seq 1 120); do         # up to 20 minutes
+            status="$(aws apprunner list-operations \
+                        --service-arn "${SERVICE_ARN}" --max-results 20 \
+                        --query "OperationSummaryList[?Id=='${op_id}'].Status" \
+                        --output text)"
+            echo "  operation ${op_id}: ${status:-<not in the last 20 operations>}"
+            case "${status}" in
+              SUCCEEDED) break ;;
+              PENDING|IN_PROGRESS|ROLLBACK_IN_PROGRESS) sleep 10 ;;
+              ""|None)
+                # ("None" because `--output text` renders an empty/null query
+                # result that way on some CLI versions.)
+                # ListOperations caps at 20 results, so enough newer operations
+                # would push ours off the page. Distinguished from a terminal
+                # status because the fix is different: this one means we lost
+                # sight of the deployment, not that it failed.
+                echo "::error::Operation ${op_id} is no longer among the 20 most recent"
+                echo "::error::operations on this service. Its outcome is UNKNOWN — check the"
+                echo "::error::App Runner console before assuming either way."
+                exit 1
+                ;;
+              *) echo "::error::Operation ${op_id} ended as ${status}."; exit 1 ;;
+            esac
+          done
+          if [ "${status}" != "SUCCEEDED" ]; then
+            echo "::error::Operation ${op_id} did not finish within 20 minutes (last status: ${status})."
+            exit 1
+          fi
+
+          # --- 3. The artifact serving traffic is the one we built -------------
+          # A succeeded operation says a deployment happened. Only this says it
+          # deployed OUR commit.
+          current=""
+          for _ in $(seq 1 20); do          # up to ~2 minutes of edge settling
+            current="$(live_commit)"
+            [ "${current}" = "${TARGET_SHA}" ] && break
+            sleep 6
+          done
+
+          if [ "${current}" != "${TARGET_SHA}" ]; then
+            echo "::error::Deployment ${op_id} succeeded, but ${health_url} reports"
+            echo "::error::commit '${current:-<unreachable>}' instead of '${TARGET_SHA}'."
+            if [ "${current}" = "unknown" ]; then
+              echo "::error::'unknown' means the image was built without --build-arg COMMIT_SHA."
+            fi
+            exit 1
+          fi
+
+          echo "Verified: ${TARGET_SHA} is live."
+          {
+            echo "### Backend deploy — verified"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${TARGET_SHA}\` |"
+            echo "| App Runner operation | \`${op_id}\` |"
+            echo "| Health | [\`${health_url}\`](${health_url}) reports \`commit: ${TARGET_SHA}\` |"
+            echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      # Before this plan, a stale site was invisible. Without this step, a
+      # FAILED deploy would be invisible too — the same defect, moved.
+      # ---------------------------------------------------------------------
+      - name: Report failure
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.DEPLOY_ALERT_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          text="Portofino backend deploy FAILED for ${TARGET_SHA} — ${RUN_URL}"
+          {
+            echo "### :x: Backend deploy failed"
+            echo ""
+            echo "Commit \`${TARGET_SHA}\`. The live service is UNCHANGED unless the"
+            echo "'Wait for the deployment' step reported a succeeded operation — read it"
+            echo "before assuming either way."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "${WEBHOOK:-}" ]; then
+            curl -fsS -X POST -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg t "${text}" '{text: $t}')" "${WEBHOOK}" \
+              && echo "Alert delivered." \
+              || echo "::warning::Alert webhook POST failed; the run log is the only notice."
+          else
+            echo "::warning::No DEPLOY_ALERT_WEBHOOK secret is set, so this failure notifies nobody."
+            echo "::warning::Set one (Slack/Teams incoming webhook) to close that gap."
+          fi

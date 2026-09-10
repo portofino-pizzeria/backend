@@ -30,3 +30,9 @@ delete process.env.STRIPE_WEBHOOK_SECRET;
 // order to exercise the routes at all. `test/admin-menu.test.ts` clears it
 // again, in a controlled way, for the fail-closed test itself.
 process.env.OWNER_MENU_TOKEN = TEST_OWNER_MENU_TOKEN;
+
+// `commit` on /api/health is baked into the IMAGE at build time, so under test
+// it must read its documented "built without one" value rather than whatever a
+// CI runner happens to export. Without this, `test/health.test.ts` would go
+// green or red depending on the shell it was started from.
+delete process.env.COMMIT_SHA;
