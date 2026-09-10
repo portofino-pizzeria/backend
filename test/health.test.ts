@@ -25,7 +25,13 @@ async function getHealth(): Promise<Record<string, unknown>> {
 }
 
 describe('GET /api/health', () => {
-  it('answers 200 without touching the database', async () => {
+  // NB: this does NOT pin "answers without a database". It cannot — the shared
+  // harness opens a pool and truncates every table before each test, so the
+  // suite needs Postgres to reach this line at all. That property is real and
+  // deliberate (`src/index.ts` serves before it migrates, so App Runner's health
+  // check passes while the DB is still coming up) and it is currently untested;
+  // testing it needs a fixture that points the pool at an unreachable host.
+  it('answers 200 with status ok', async () => {
     expect(await getHealth()).toMatchObject({ status: 'ok' });
   });
 

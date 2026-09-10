@@ -135,12 +135,32 @@ jobs:
               exit 1
             fi
           fi
+
+          # `fetch-depth: 0` fetches every ref, so the revision above may resolve
+          # to the tip of an open PR branch that no one has reviewed. Migrations
+          # run on container boot against production Aurora, so a dispatch must
+          # not be a route around review: only history that is already on master
+          # may be deployed. A rollback target is an ancestor of master, so this
+          # constrains nothing legitimate.
+          git fetch --no-tags --quiet origin master
+          if ! git merge-base --is-ancestor "${sha}" origin/master; then
+            echo "::error::${sha} is not an ancestor of origin/master."
+            echo "::error::Refusing to deploy a commit that has not landed on master — it would"
+            echo "::error::apply its drizzle/ migrations to production Aurora unreviewed."
+            exit 1
+          fi
           echo "Deploying commit ${sha}"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
-  # The gate. Reuses ci.yml rather than restating it, at the resolved commit —
-  # so a rollback dispatch tests the code being rolled back TO.
+  # The gate. Reuses ci.yml rather than restating it, and passes the resolved
+  # commit so a rollback dispatch tests the CODE being rolled back to.
+  #
+  # Note the asymmetry: a local `uses: ./…` resolves the WORKFLOW FILE at this
+  # run's own commit (master's tip), while `ref:` decides only which code is
+  # checked out. So a rollback to a commit predating a CI change is tested by
+  # today's CI, which can fail for reasons that have nothing to do with that
+  # commit.
   # ---------------------------------------------------------------------------
   test:
     name: CI
@@ -159,6 +179,13 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      # For the environment-protection read below. An explicit `permissions:`
+      # block sets every unlisted scope to `none`, and there is no workflow
+      # `permissions:` key named for the Environments API, so grant the two
+      # adjacent read scopes rather than discover at deploy time that the gate
+      # check cannot see its own gate.
+      actions: read
+      deployments: read
 
     # The required-reviewer gate. See the header. If this Environment does not
     # exist, GitHub creates it unprotected on first use — which is exactly what
@@ -187,8 +214,22 @@ jobs:
           # misconfiguration costs a red run and nothing else.
           if ! rules="$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT_NAME}" \
                           --jq '[.protection_rules[].type] | join(",")' 2>&1)"; then
-            echo "::error::Cannot read the protection rules of environment '${ENVIRONMENT_NAME}': ${rules}"
+            echo "::error::Cannot read the protection rules of environment '${ENVIRONMENT_NAME}'."
             echo "::error::That is UNKNOWN, not 'protected'. Refusing to deploy."
+            echo "::error::Response: ${rules}"
+            # 403 and 404 look alike here and have completely different fixes,
+            # so name them rather than leaving the reader to guess.
+            case "${rules}" in
+              *403*|*"not accessible"*)
+                echo "::error::403 — GITHUB_TOKEN cannot read this repository's environments."
+                echo "::error::Fix the job's permissions, or supply a fine-grained PAT with"
+                echo "::error::Environments:read as a secret. This is NOT a missing environment."
+                ;;
+              *404*|*"Not Found"*)
+                echo "::error::404 — environment '${ENVIRONMENT_NAME}' does not exist. Create it"
+                echo "::error::under Settings -> Environments and add a required reviewer."
+                ;;
+            esac
             exit 1
           fi
 
@@ -241,23 +282,6 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ---------------------------------------------------------------------
-      # Snapshot BEFORE the push. This is the whole basis of the verification:
-      # "an operation that was not here a moment ago" is clock-free, so it
-      # survives skew between the runner and AWS, and it cannot be satisfied by
-      # a deployment that predates this run.
-      # ---------------------------------------------------------------------
-      - name: Snapshot the App Runner operations that already exist
-        run: |
-          set -euo pipefail
-          aws apprunner list-operations \
-            --service-arn "${SERVICE_ARN}" --max-results 20 \
-            --query "OperationSummaryList[?Type=='START_DEPLOYMENT'||Type=='UPDATE_SERVICE'].Id" \
-            --output text \
-            | tr '\t' '\n' | sed '/^$/d' | sort > "${RUNNER_TEMP}/ops-before.txt"
-          echo "Operations before push:"
-          cat "${RUNNER_TEMP}/ops-before.txt" || true
-
       - name: Build the image
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
@@ -273,6 +297,25 @@ jobs:
             -t "${repo}:latest" \
             .
           echo "REPO=${repo}" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------------
+      # Snapshot IMMEDIATELY BEFORE the push, not before the build. This is the
+      # whole basis of the verification: "an operation that was not here a
+      # moment ago" is clock-free, so it survives skew between the runner and
+      # AWS, and it cannot be satisfied by a deployment that predates this run.
+      # Taking it before the build would leave the build's whole duration as a
+      # window in which someone else's deployment could be mistaken for ours.
+      # ---------------------------------------------------------------------
+      - name: Snapshot the App Runner operations that already exist
+        run: |
+          set -euo pipefail
+          aws apprunner list-operations \
+            --service-arn "${SERVICE_ARN}" --max-results 20 \
+            --query "OperationSummaryList[?Type=='START_DEPLOYMENT'||Type=='UPDATE_SERVICE'].Id" \
+            --output text \
+            | tr '\t' '\n' | sed '/^$/d' | sort > "${RUNNER_TEMP}/ops-before.txt"
+          echo "Operations before push:"
+          cat "${RUNNER_TEMP}/ops-before.txt" || true
 
       - name: Push :<sha>, then :latest
         run: |
@@ -301,42 +344,82 @@ jobs:
             curl -fsS --max-time 15 "${health_url}" 2>/dev/null | jq -r '.commit // ""' 2>/dev/null || true
           }
 
+          # Returns the deployment operations that were not in the pre-push
+          # snapshot, or exits non-zero if AWS could not be asked.
+          #
+          # The `|| true` belongs to the grep ALONE, and the aws call is checked
+          # on its own. Wrapping the whole pipeline in `|| true` would make a
+          # throttled or errored ListOperations indistinguishable from "no new
+          # operation yet" — the caller would wait out its full timeout and then
+          # blame auto-deploy for an AWS-side failure.
+          # NOT sorted: ListOperations returns newest-first, and `sort` would
+          # replace that with lexicographic UUID order — so with two unseen
+          # operations we could follow the older one. `grep -f` does not require
+          # its pattern file to be sorted, so the snapshot's own ordering is
+          # irrelevant.
           new_ops() {
-            aws apprunner list-operations \
-              --service-arn "${SERVICE_ARN}" --max-results 20 \
-              --query "OperationSummaryList[?Type=='START_DEPLOYMENT'||Type=='UPDATE_SERVICE'].Id" \
-              --output text \
-              | tr '\t' '\n' | sed '/^$/d' | sort \
+            local raw
+            raw="$(aws apprunner list-operations \
+                     --service-arn "${SERVICE_ARN}" --max-results 20 \
+                     --query "OperationSummaryList[?Type=='START_DEPLOYMENT'||Type=='UPDATE_SERVICE'].Id" \
+                     --output text)" || return 1
+            printf '%s\n' "${raw}" | tr '\t' '\n' | sed '/^$/d' \
               | grep -F -x -v -f "${RUNNER_TEMP}/ops-before.txt" || true
           }
 
+          no_op_summary() {
+            echo "No deployment was triggered: ${TARGET_SHA} is already live (identical image digest)."
+            {
+              echo "### Backend deploy — no-op"
+              echo ""
+              echo "\`${TARGET_SHA}\` was already the running image, so App Runner started no"
+              echo "deployment. Verified live via \`${health_url}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
           # --- 1. An operation that started after our push ---------------------
+          #
+          # 15 minutes, not 5. ECR-push -> App Runner auto-deploy is event-driven
+          # and its latency is not contractual; a 5-minute budget turns an
+          # ordinary lag into a red run that blames auto_deployments_enabled
+          # while a migration-bearing deploy proceeds unwatched. The budget for
+          # the operation to COMPLETE (below) was never the tight one.
           op_id=""
-          for _ in $(seq 1 30); do          # up to 5 minutes
-            op_id="$(new_ops | head -n 1)"
+          for i in $(seq 1 90); do
+            if ! candidates="$(new_ops)"; then
+              echo "::error::aws apprunner list-operations failed while waiting for the"
+              echo "::error::deployment to start. The push already happened, so the deploy may"
+              echo "::error::well be in flight — this is UNKNOWN, not a failed deployment."
+              exit 1
+            fi
+            # First line = newest operation. No `head`, so no SIGPIPE to reason
+            # about under `set -o pipefail`.
+            op_id="${candidates%%$'\n'*}"
             [ -n "${op_id}" ] && break
+
+            # The identical-digest no-op resolves early rather than serving out
+            # the full 15 minutes: if nothing has fired after ~2 minutes AND the
+            # service already reports this exact commit, there is nothing to wait
+            # for. A real deploy still reports the OLD commit here, so this
+            # cannot short-circuit one.
+            if [ "${i}" -ge 12 ] && [ "$(live_commit)" = "${TARGET_SHA}" ]; then
+              no_op_summary
+              exit 0
+            fi
             sleep 10
           done
 
           if [ -z "${op_id}" ]; then
-            # No deployment fired. The ONLY honest reason is an identical image
-            # digest — i.e. this exact commit is already the live one, which a
-            # rollback dispatch can legitimately produce. Anything else is a
-            # deploy that silently did not happen, and must not pass.
             current="$(live_commit)"
             if [ "${current}" = "${TARGET_SHA}" ]; then
-              echo "No deployment was triggered: ${TARGET_SHA} is already live (identical image digest)."
-              {
-                echo "### Backend deploy — no-op"
-                echo ""
-                echo "\`${TARGET_SHA}\` was already the running image, so App Runner started no"
-                echo "deployment. Verified live via \`${health_url}\`."
-              } >> "$GITHUB_STEP_SUMMARY"
+              no_op_summary
               exit 0
             fi
-            echo "::error::No App Runner deployment started within 5 minutes of pushing :latest,"
+            echo "::error::No App Runner deployment started within 15 minutes of pushing :latest,"
             echo "::error::and /api/health reports commit '${current:-<unreachable>}', not '${TARGET_SHA}'."
-            echo "::error::Check that auto_deployments_enabled is still true on the service."
+            echo "::error::This is UNKNOWN, not a failed deployment: the image IS pushed, so a"
+            echo "::error::deployment may still start after this run ends. Check the App Runner"
+            echo "::error::console, and check auto_deployments_enabled is still true."
             exit 1
           fi
 
@@ -344,11 +427,28 @@ jobs:
 
           # --- 2. That operation has to actually succeed -----------------------
           status=""
+          api_failures=0
           for _ in $(seq 1 120); do         # up to 20 minutes
-            status="$(aws apprunner list-operations \
-                        --service-arn "${SERVICE_ARN}" --max-results 20 \
-                        --query "OperationSummaryList[?Id=='${op_id}'].Status" \
-                        --output text)"
+            # A single throttle or 5xx during a 20-minute wait must not abandon a
+            # deployment that is still applying migrations — but a PERSISTENT
+            # failure must still end the loop rather than run to the job timeout
+            # (a timed-out job is cancelled, and `failure()` is false for that).
+            if ! status="$(aws apprunner list-operations \
+                             --service-arn "${SERVICE_ARN}" --max-results 20 \
+                             --query "OperationSummaryList[?Id=='${op_id}'].Status" \
+                             --output text)"; then
+              api_failures=$((api_failures + 1))
+              if [ "${api_failures}" -ge 5 ]; then
+                echo "::error::aws apprunner list-operations failed ${api_failures} times in a row"
+                echo "::error::while polling operation ${op_id}. Its outcome is UNKNOWN — the"
+                echo "::error::deployment may still be running. Check the App Runner console."
+                exit 1
+              fi
+              echo "  (ListOperations failed; retry ${api_failures}/5)"
+              sleep 10
+              continue
+            fi
+            api_failures=0
             echo "  operation ${op_id}: ${status:-<not in the last 20 operations>}"
             case "${status}" in
               SUCCEEDED) break ;;
@@ -404,31 +504,69 @@ jobs:
             echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # ---------------------------------------------------------------------
-      # Before this plan, a stale site was invisible. Without this step, a
-      # FAILED deploy would be invisible too — the same defect, moved.
-      # ---------------------------------------------------------------------
-      - name: Report failure
-        if: failure()
+  # ---------------------------------------------------------------------------
+  # Before this plan, a stale site was invisible. Without this, a FAILED deploy
+  # would be invisible too — the same defect, moved.
+  #
+  # A separate JOB rather than an `if: failure()` step, because the cases worth
+  # alerting on are exactly the ones a step inside `deploy` cannot see: `resolve`
+  # or `test` failing (so `deploy` never runs), and `deploy` being CANCELLED —
+  # which is what `timeout-minutes` produces, and `failure()` is false for a
+  # cancellation. A 45-minute timeout is precisely "a deploy is in flight and
+  # nobody is watching".
+  # ---------------------------------------------------------------------------
+  alert:
+    name: Report a failed deploy
+    needs: [resolve, test, deploy]
+    if: >-
+      always() &&
+      (needs.resolve.result == 'failure' ||
+       needs.test.result == 'failure' ||
+       needs.deploy.result == 'failure' ||
+       needs.deploy.result == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Notify
         env:
           WEBHOOK: ${{ secrets.DEPLOY_ALERT_WEBHOOK }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TARGET_SHA: ${{ needs.resolve.outputs.sha }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
         run: |
           set -euo pipefail
-          text="Portofino backend deploy FAILED for ${TARGET_SHA} — ${RUN_URL}"
+
+          if [ "${DEPLOY_RESULT}" = "cancelled" ]; then
+            # The dangerous one: the push may already have happened, so App
+            # Runner may be mid-deployment — migrations included — with nothing
+            # left watching it.
+            headline="Portofino backend deploy CANCELLED (possibly mid-flight)"
+            detail="The deploy job was cancelled or timed out. If the image was already pushed, App Runner may be applying it RIGHT NOW, migrations included. Check the App Runner console before doing anything else."
+          else
+            headline="Portofino backend deploy FAILED"
+            detail="resolve=${RESOLVE_RESULT} test=${TEST_RESULT} deploy=${DEPLOY_RESULT}. Read the 'Wait for the deployment' step before assuming the live service is unchanged."
+          fi
+
+          text="${headline} for ${TARGET_SHA:-<unresolved>} — ${RUN_URL}"
           {
-            echo "### :x: Backend deploy failed"
+            echo "### :x: ${headline}"
             echo ""
-            echo "Commit \`${TARGET_SHA}\`. The live service is UNCHANGED unless the"
-            echo "'Wait for the deployment' step reported a succeeded operation — read it"
-            echo "before assuming either way."
+            echo "Commit \`${TARGET_SHA:-<unresolved>}\`."
+            echo ""
+            echo "${detail}"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ -n "${WEBHOOK:-}" ]; then
-            curl -fsS -X POST -H 'Content-Type: application/json' \
-              --data "$(jq -nc --arg t "${text}" '{text: $t}')" "${WEBHOOK}" \
-              && echo "Alert delivered." \
-              || echo "::warning::Alert webhook POST failed; the run log is the only notice."
+            if curl -fsS -X POST -H 'Content-Type: application/json' \
+                 --data "$(jq -nc --arg t "${text}" '{text: $t}')" "${WEBHOOK}"; then
+              echo "Alert delivered."
+            else
+              echo "::warning::Alert webhook POST failed; the run log is the only notice."
+            fi
           else
             echo "::warning::No DEPLOY_ALERT_WEBHOOK secret is set, so this failure notifies nobody."
             echo "::warning::Set one (Slack/Teams incoming webhook) to close that gap."
