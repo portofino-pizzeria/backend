@@ -55,6 +55,24 @@ export const config = {
   // Shared secret for the kitchen dashboard. Empty disables the check (dev).
   kitchenToken: env('KITCHEN_TOKEN'),
 
+  /**
+   * Explicit opt-out from the kitchen guard, for local dev and the test suite.
+   *
+   * The guard fails CLOSED when `KITCHEN_TOKEN` is unset. It did not used to:
+   * an unset token skipped the check entirely, which put
+   * `GET /api/kitchen/orders` — every order's customer NAME, PHONE and
+   * DELIVERY ADDRESS — on the open internet for any deployment that forgot to
+   * set one. The old comment called that "defensible for a screen already
+   * behind the counter", but it is the API that is exposed, not the screen.
+   *
+   * Deliberately an opt-OUT rather than a `NODE_ENV !== 'production'` check.
+   * `NODE_ENV` is set to `production` in the Dockerfile, so keying on it would
+   * work — right up until an environment fails to set it, and then the failure
+   * mode is a wide-open PII endpoint. An affirmative `1` is required to
+   * disable the check, so a missing or misconfigured variable fails SAFE.
+   */
+  kitchenAuthDisabled: env('KITCHEN_AUTH_DISABLED') === '1',
+
   // Shared secret for the owner's menu editor (/api/admin/menu/*).
   //
   // Deliberately NOT `kitchenToken`, and deliberately NOT skippable when empty.

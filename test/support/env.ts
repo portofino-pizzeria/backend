@@ -22,11 +22,17 @@ process.env.DATABASE_URL = resolveTestDatabaseUrl();
 // would flip the payments module off its mock provider and start reaching for
 // the network.
 delete process.env.KITCHEN_TOKEN;
+// With no token the kitchen guard now fails CLOSED, so the suite opts out
+// explicitly to exercise the routes at all — the same shape as the
+// OWNER_MENU_TOKEN line below, and the reason the opt-out exists.
+// `test/kitchen-auth.test.ts` turns it back off, in a controlled way, for the
+// fail-closed test itself.
+process.env.KITCHEN_AUTH_DISABLED = '1';
 delete process.env.STRIPE_SECRET_KEY;
 delete process.env.STRIPE_WEBHOOK_SECRET;
 
-// The owner's menu editor fails CLOSED when its credential is unset (unlike the
-// kitchen guard, which skips its check) — so the suite has to *set* one in
+// The owner's menu editor fails CLOSED when its credential is unset (as the
+// kitchen guard now does too) — so the suite has to *set* one in
 // order to exercise the routes at all. `test/admin-menu.test.ts` clears it
 // again, in a controlled way, for the fail-closed test itself.
 process.env.OWNER_MENU_TOKEN = TEST_OWNER_MENU_TOKEN;
