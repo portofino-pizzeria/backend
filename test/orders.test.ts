@@ -6,6 +6,7 @@ import type { Order } from '../src/types.js';
 import { createTestApp } from './support/app';
 import {
   deleteMenuItem,
+  VALID_CUSTOMER,
   seedCategory,
   seedItem,
   updateMenuItem,
@@ -42,8 +43,14 @@ async function seedMargherita(): Promise<void> {
 
 type OrderPayload = Record<string, unknown>;
 
+/**
+ * Posts an order, supplying VALID_CUSTOMER unless the payload names its own
+ * `customer` key — including an explicit `undefined`, which is how a test asks
+ * for the customer to be absent. See VALID_CUSTOMER for why the default exists.
+ */
 function postOrder(payload: OrderPayload) {
-  return app.inject({ method: 'POST', url: '/api/orders', payload });
+  const body = 'customer' in payload ? payload : { ...payload, customer: VALID_CUSTOMER };
+  return app.inject({ method: 'POST', url: '/api/orders', payload: body });
 }
 
 async function createOrder(payload: OrderPayload): Promise<Order> {
@@ -300,6 +307,151 @@ describe('POST /api/orders — refusals', () => {
   });
 });
 
+describe('POST /api/orders requires contact details', () => {
+  // Every order is a delivery. Before this rule an order with no name, phone
+  // or address was accepted, confirmed to the diner and sent to the kitchen as
+  // a blank card nobody could deliver or call about.
+  const oneLine = {
+    items: [{ menuItemId: 'margherita', variantId: 'margherita-gross', quantity: 1 }],
+  };
+
+  async function rejection(customer: unknown): Promise<string> {
+    await seedMargherita();
+    const res = await postOrder({ ...oneLine, customer });
+    expect(res.statusCode).toBe(400);
+    return res.json<{ error: string }>().error;
+  }
+
+  it('refuses an order with no customer block at all', async () => {
+    expect(await rejection(undefined)).toBe(
+      'Bitte Name, Telefonnummer und Lieferadresse angeben.',
+    );
+  });
+
+  it.each([
+    ['name', 'Bitte einen Namen angeben.'],
+    ['phone', 'Bitte eine Telefonnummer angeben.'],
+    ['address', 'Bitte eine Lieferadresse angeben.'],
+  ] as const)('refuses a missing %s', async (field, message) => {
+    const { [field]: _omitted, ...rest } = VALID_CUSTOMER;
+    expect(await rejection(rest)).toBe(message);
+  });
+
+  // Exact messages, not a prefix match: a whitespace-only phone also trips the
+  // digit rule, and only the FIRST issue surfaces, so a /^Bitte / assertion
+  // would pass on the wrong one.
+  const MISSING = {
+    name: 'Bitte einen Namen angeben.',
+    phone: 'Bitte eine Telefonnummer angeben.',
+    address: 'Bitte eine Lieferadresse angeben.',
+  } as const;
+
+  it.each(['name', 'phone', 'address'] as const)(
+    'refuses a %s that is only whitespace',
+    async (field) => {
+      expect(await rejection({ ...VALID_CUSTOMER, [field]: '   ' })).toBe(MISSING[field]);
+    },
+  );
+
+  it.each(['name', 'address'] as const)(
+    'refuses a %s made only of zero-width characters',
+    async (field) => {
+      // trim() keeps these, and they render as nothing on the kitchen card.
+      const invisible = String.fromCodePoint(0x200b, 0x200d, 0x2060);
+      expect(await rejection({ ...VALID_CUSTOMER, [field]: invisible })).toBe(MISSING[field]);
+    },
+  );
+
+  // Two rules, each with inputs only IT decides:
+  //  - stripped by INVISIBLE: soft hyphen, invisible separator, and the Hangul
+  //    filler — a LETTER by category, so the readability rule would accept it;
+  //  - NOT in INVISIBLE, caught only by the letter-or-digit rule: the Mongolian
+  //    vowel separator (a format character trim() keeps) and a lone combining
+  //    grapheme joiner.
+  it.each([
+    ['name', 0x00ad],
+    ['name', 0x2063],
+    ['address', 0x3164],
+    ['name', 0x180e],
+    ['address', 0x034f],
+  ] as const)('refuses a %s that renders as nothing (code point %s)', async (field, codePoint) => {
+    expect(
+      await rejection({ ...VALID_CUSTOMER, [field]: String.fromCodePoint(codePoint) }),
+    ).toBe(MISSING[field]);
+  });
+
+  // Boundaries, so a changed threshold goes red.
+  it('refuses a phone number with 5 digits', async () => {
+    expect(await rejection({ ...VALID_CUSTOMER, phone: '12 34 5' })).toBe(
+      'Bitte eine gültige Telefonnummer angeben.',
+    );
+  });
+
+  it('accepts a phone number with exactly 6 digits, and fields at their length limits', async () => {
+    await seedMargherita();
+    const order = await createOrder({
+      ...oneLine,
+      customer: { name: 'A'.repeat(200), phone: '12 34 56', address: 'B'.repeat(500) },
+    });
+    expect(order.customer?.phone).toBe('12 34 56');
+    expect(order.customer?.name).toHaveLength(200);
+    expect(order.customer?.address).toHaveLength(500);
+  });
+
+  it('answers a null customer block in German, like a missing one', async () => {
+    expect(await rejection(null)).toBe('Bitte Name, Telefonnummer und Lieferadresse angeben.');
+  });
+
+  // One rejection per case: rejection() seeds the menu, and the database is
+  // reset per test rather than per call.
+  it.each([
+    ['name', null],
+    ['phone', 12345678],
+  ] as const)('answers a wrong-typed %s in German', async (field, value) => {
+    expect(await rejection({ ...VALID_CUSTOMER, [field]: value })).toBe(MISSING[field]);
+  });
+
+  it.each([
+    ['name', 201, 'Der Name ist zu lang (höchstens 200 Zeichen).'],
+    ['phone', 51, 'Die Telefonnummer ist zu lang (höchstens 50 Zeichen).'],
+    ['address', 501, 'Die Lieferadresse ist zu lang (höchstens 500 Zeichen).'],
+  ] as const)('answers an over-long %s in German', async (field, length, message) => {
+    expect(await rejection({ ...VALID_CUSTOMER, [field]: '1'.repeat(length) })).toBe(message);
+  });
+
+  it.each(['+49 …', '0201', '12-34'])(
+    'refuses a phone number with too few digits (%j)',
+    async (phone) => {
+      expect(await rejection({ ...VALID_CUSTOMER, phone })).toBe(
+        'Bitte eine gültige Telefonnummer angeben.',
+      );
+    },
+  );
+
+  it('writes nothing for a refused order', async () => {
+    await rejection({ ...VALID_CUSTOMER, address: '' });
+    const kitchen = await app.inject({ method: 'GET', url: '/api/kitchen/orders?scope=all' });
+    expect(kitchen.json<{ orders: Order[] }>().orders).toEqual([]);
+  });
+
+  it('accepts a complete customer and stores the values cleaned and trimmed', async () => {
+    await seedMargherita();
+    const order = await createOrder({
+      ...oneLine,
+      customer: {
+        name: `  Anna${String.fromCodePoint(0x200b)}  `,
+        phone: ' +49 201 5415883 ',
+        address: ' Teststraße 7 ',
+      },
+    });
+    expect(order.customer).toEqual({
+      name: 'Anna',
+      phone: '+49 201 5415883',
+      address: 'Teststraße 7',
+    });
+  });
+});
+
 describe('GET /api/orders/:id', () => {
   it('returns a created order', async () => {
     await seedMargherita();
@@ -307,13 +459,17 @@ describe('GET /api/orders/:id', () => {
       items: [
         { menuItemId: 'margherita', variantId: 'margherita-gross', quantity: 1 },
       ],
-      customer: { name: 'Anna', phone: '0201 5415883' },
+      customer: { name: 'Anna', phone: '0201 5415883', address: 'Teststraße 7, 45127 Essen' },
     });
 
     const read = await readOrder(created.id);
 
     expect(read).toEqual(created);
-    expect(read.customer).toEqual({ name: 'Anna', phone: '0201 5415883' });
+    expect(read.customer).toEqual({
+      name: 'Anna',
+      phone: '0201 5415883',
+      address: 'Teststraße 7, 45127 Essen',
+    });
   });
 
   it('404s an unknown order id', async () => {

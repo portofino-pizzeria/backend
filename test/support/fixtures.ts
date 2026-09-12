@@ -266,3 +266,15 @@ export async function updateMenuVariant(
     .returning();
   return one(rows, `update of menu variant ${id}`);
 }
+
+/**
+ * A customer block the order route accepts. Checkout requires a name, a phone
+ * number and a delivery address, so a test that is about something ELSE must
+ * still send one — otherwise its 400 comes from the missing customer and the
+ * assertion passes for the wrong reason.
+ */
+export const VALID_CUSTOMER = {
+  name: 'Anna Beispiel',
+  phone: '0201 5415883',
+  address: 'Teststraße 7, 45127 Essen',
+} as const;

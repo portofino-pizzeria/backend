@@ -24,6 +24,7 @@ import {
   seedItem,
   seedLegend,
   seedLegendEntry,
+  VALID_CUSTOMER,
 } from './support/fixtures';
 
 let app: FastifyInstance;
@@ -708,6 +709,7 @@ describe('editing the menu never rewrites order history', () => {
       method: 'POST',
       url: '/api/orders',
       payload: {
+        customer: VALID_CUSTOMER,
         items: [
           { menuItemId: 'margherita', variantId: 'margherita-gross', quantity: 2 },
         ],
@@ -753,6 +755,7 @@ describe('editing the menu never rewrites order history', () => {
       method: 'POST',
       url: '/api/orders',
       payload: {
+        customer: VALID_CUSTOMER,
         items: [
           { menuItemId: 'margherita', variantId: 'margherita-gross', quantity: 1 },
         ],
