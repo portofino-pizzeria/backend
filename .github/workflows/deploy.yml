@@ -29,21 +29,39 @@
 # fails closed if that protection is missing, because an Environment that does
 # not exist is created silently and unprotected on first use.
 #
-# >> AS SHIPPED, THAT REVIEWER DOES NOT EXIST YET AND THIS WORKFLOW THEREFORE
-# >> REFUSES TO DEPLOY. The `production-backend` environment has been created
-# >> and restricted to the `master` branch, but `portofino-pizzeria` is a FREE
-# >> organisation and required reviewers on a PRIVATE repository need Team or
-# >> Enterprise:
-# >>
-# >>   PUT .../environments/production-backend  {"reviewers":[...]}
-# >>   422 "Failed to create the environment protection rule. Please ensure the
-# >>        billing plan supports the required reviewers protection rule."
-# >>
-# >> Upgrade the org plan (or make the repo public, which is not an option
-# >> here), then add a required reviewer under Settings -> Environments ->
-# >> production-backend. Until then every deploy stops at the first step, which
-# >> is the correct behaviour: no reviewer means an unattended migration
-# >> against production Aurora.
+# The reviewer is READ, not assumed. When this workflow first shipped the
+# environment had no required reviewer (required reviewers on a private repo
+# in a Free organisation answered 422 from the API), and every deploy stopped
+# at that first step — the correct outcome. A reviewer has since been added,
+# but nothing here pins that: the gate step reads the environment's protection
+# rules on every run, so if the reviewer is ever removed the deploy refuses
+# again rather than silently applying migrations unattended. To check by hand:
+#
+#   gh api repos/portofino-pizzeria/backend/environments/production-backend \
+#     --jq '[.protection_rules[].type]'          # must contain "required_reviewers"
+#
+# ---------------------------------------------------------------------------
+# Rollback: retag when the image already exists, rebuild only when it does not
+# ---------------------------------------------------------------------------
+# Every deploy pushes an immutable `:<sha>` tag beside `:latest`. A
+# `workflow_dispatch` naming an older sha therefore usually names an image that
+# is ALREADY in ECR, built at that commit with COMMIT_SHA baked in. For that
+# case the deploy RETAGS it (`ecr:BatchGetImage` the `:<sha>` manifest,
+# `ecr:PutImage` it as `:latest`) instead of rebuilding: it is faster, it
+# ships byte-for-byte the artifact that was known good, and it still works on
+# the day the tree at that sha no longer builds — which is exactly the day a
+# rollback is needed. The infra role grants `ecr:BatchGetImage` for this and
+# nothing else (infra/github-oidc.tf, statement EcrPushBackendImage).
+#
+# When no `:<sha>` image exists — a fresh master push, or a rollback to a
+# commit that predates this pipeline — the workflow builds one. Either way the
+# verification below is identical: a retag is a push of `:latest` as far as
+# ECR's event stream and App Runner's auto-deploy are concerned, and the
+# health assertion proves the same thing about the same field.
+#
+# A rollback across a migration is NOT a rollback (the old code runs against
+# the new schema) and must be treated as a forward fix. Nothing here can tell
+# the difference, so that judgement stays with the reviewer at the gate.
 #
 # ---------------------------------------------------------------------------
 # Configuration (repository Settings -> Secrets and variables -> Actions ->
@@ -282,21 +300,78 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build the image
+      # ---------------------------------------------------------------------
+      # Retag or rebuild? Decided by asking ECR whether an image tagged with
+      # this exact commit already exists. See the header for why.
+      # ---------------------------------------------------------------------
+      - name: Look for an image already built at this commit
+        id: existing
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           set -euo pipefail
-          repo="${REGISTRY}/${ECR_REPOSITORY}"
+          echo "REPO=${REGISTRY}/${ECR_REPOSITORY}" >> "$GITHUB_ENV"
+
+          # One call answers both questions: is `:<sha>` there, and is `:latest`
+          # already that same image. A MISSING tag is not an error to this API —
+          # it lands in `.failures` with code ImageNotFound — so a non-zero exit
+          # here is a real failure (denied, throttled, no such repository) and
+          # `set -e` lets it fail the job rather than be read as "not built yet".
+          out="$(aws ecr batch-get-image \
+                   --repository-name "${ECR_REPOSITORY}" \
+                   --image-ids "imageTag=${TARGET_SHA}" "imageTag=latest" \
+                   --output json)"
+
+          sha_digest="$(jq -r --arg t "${TARGET_SHA}" \
+            '.images[] | select(.imageId.imageTag == $t) | .imageId.imageDigest' <<<"${out}")"
+          latest_digest="$(jq -r \
+            '.images[] | select(.imageId.imageTag == "latest") | .imageId.imageDigest' <<<"${out}")"
+
+          if [ -z "${sha_digest}" ]; then
+            code="$(jq -r --arg t "${TARGET_SHA}" \
+              '.failures[] | select(.imageId.imageTag == $t) | .failureCode' <<<"${out}")"
+            if [ "${code}" != "ImageNotFound" ]; then
+              echo "::error::ECR could not say whether ${ECR_REPOSITORY}:${TARGET_SHA} exists"
+              echo "::error::(failure code '${code:-<none>}'). That is UNKNOWN, not 'not built';"
+              echo "::error::refusing to guess. Response: ${out}"
+              exit 1
+            fi
+            echo "No image tagged ${TARGET_SHA} in ${ECR_REPOSITORY}: building one."
+            echo "strategy=build" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Keep the manifest verbatim, media type included: `:latest` today is
+          # an OCI image index (buildx provenance), and PutImage needs the same
+          # media type it was stored under or it rejects the manifest.
+          jq -r --arg t "${TARGET_SHA}" \
+            '.images[] | select(.imageId.imageTag == $t) | .imageManifest' <<<"${out}" \
+            > "${RUNNER_TEMP}/manifest.json"
+          media_type="$(jq -r --arg t "${TARGET_SHA}" \
+            '.images[] | select(.imageId.imageTag == $t) | .imageManifestMediaType' <<<"${out}")"
+
+          echo "Found ${ECR_REPOSITORY}:${TARGET_SHA} (${sha_digest}): retagging, not rebuilding."
+          echo "strategy=retag" >> "$GITHUB_OUTPUT"
+          echo "media_type=${media_type}" >> "$GITHUB_OUTPUT"
+          if [ "${latest_digest}" = "${sha_digest}" ]; then
+            echo ":latest already points at that digest."
+            echo "already_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the image
+        if: steps.existing.outputs.strategy == 'build'
+        run: |
+          set -euo pipefail
           # COMMIT_SHA is baked in (Dockerfile ARG -> ENV) and surfaces on
           # /api/health. It is also what makes each commit produce a distinct
           # image digest, which is what makes App Runner's auto-deploy fire.
           docker build \
             --build-arg "COMMIT_SHA=${TARGET_SHA}" \
-            -t "${repo}:${TARGET_SHA}" \
-            -t "${repo}:latest" \
+            -t "${REPO}:${TARGET_SHA}" \
+            -t "${REPO}:latest" \
             .
-          echo "REPO=${repo}" >> "$GITHUB_ENV"
 
       # ---------------------------------------------------------------------
       # Snapshot IMMEDIATELY BEFORE the push, not before the build. This is the
@@ -318,6 +393,7 @@ jobs:
           cat "${RUNNER_TEMP}/ops-before.txt" || true
 
       - name: Push :<sha>, then :latest
+        if: steps.existing.outputs.strategy == 'build'
         run: |
           set -euo pipefail
           # Order matters. Pushing `:latest` is what App Runner watches, so the
@@ -326,11 +402,42 @@ jobs:
           docker push "${REPO}:${TARGET_SHA}"
           docker push "${REPO}:latest"
 
+      - name: Retag :<sha> as :latest
+        if: steps.existing.outputs.strategy == 'retag'
+        env:
+          ALREADY_LATEST: ${{ steps.existing.outputs.already_latest }}
+          MEDIA_TYPE: ${{ steps.existing.outputs.media_type }}
+        run: |
+          set -euo pipefail
+          if [ "${ALREADY_LATEST}" = "true" ]; then
+            # PutImage of a tag onto the manifest it already names is
+            # ImageAlreadyExistsException, not a no-op — and there is nothing
+            # to push anyway. App Runner fires no deployment for this; the
+            # verify step's no-op arm settles it against /api/health.
+            echo ":latest is already ${TARGET_SHA}; nothing to retag."
+            exit 0
+          fi
+          # A PutImage on `:latest` is a push of that tag to ECR's event stream,
+          # which is what App Runner's auto-deploy watches — the same trigger a
+          # `docker push` ends with.
+          aws ecr put-image \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-tag latest \
+            --image-manifest "file://${RUNNER_TEMP}/manifest.json" \
+            --image-manifest-media-type "${MEDIA_TYPE}" \
+            --query 'image.imageId' --output json
+          echo "Retagged ${ECR_REPOSITORY}:${TARGET_SHA} as :latest."
+
       # ---------------------------------------------------------------------
       # Verify by operation, then by artifact. Neither alone is enough.
       # ---------------------------------------------------------------------
       - name: Wait for the deployment and assert the live commit
         id: verify
+        env:
+          STRATEGY: >-
+            ${{ steps.existing.outputs.strategy == 'retag'
+                && 'retagged the existing :<sha> image'
+                || 'built and pushed' }}
         run: |
           set -euo pipefail
 
@@ -499,6 +606,7 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Commit | \`${TARGET_SHA}\` |"
+            echo "| Image | ${STRATEGY} |"
             echo "| App Runner operation | \`${op_id}\` |"
             echo "| Health | [\`${health_url}\`](${health_url}) reports \`commit: ${TARGET_SHA}\` |"
             echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"

@@ -12,6 +12,12 @@ async function main() {
   // doesn't touch the DB) passes even while the database is still coming up.
   await app.listen({ port: config.port, host: '0.0.0.0' });
 
+  // The same build marker /api/health serves, in the service log: App Runner
+  // keeps logs per revision, so a log that names its commit is the fastest
+  // answer to "which artifact wrote this line" — and "unknown" here is the
+  // tell for an image built without --build-arg COMMIT_SHA.
+  app.log.info(`Portofino API listening on :${config.port}, commit ${config.commit}`);
+
   // Then bring the schema up + seed, retrying while the DB becomes reachable —
   // a freshly-provisioned Aurora endpoint can take a bit to resolve/accept
   // connections. Idempotent, so safe on every boot.

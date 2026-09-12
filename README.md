@@ -129,10 +129,39 @@ reviewer** — automatic to the door, human through it. Its first step verifies
 that protection actually exists and fails closed if it does not, or if it
 cannot tell.
 
-> ⚠️ **The required reviewer is not configured yet, so deploys currently stop
-> at that first step.** The environment exists and is restricted to `master`,
-> but required reviewers on a *private* repository need a GitHub Team or
-> Enterprise plan and `portofino-pizzeria` is on Free (the API answers `422
-> "Please ensure the billing plan supports the required reviewers protection
-> rule"`). Upgrade the plan, then add a reviewer under Settings → Environments
-> → `production-backend`.
+The reviewer is read on every run, never assumed. When the workflow first
+shipped there was none — required reviewers on a *private* repository in a
+Free organisation answered `422 "Please ensure the billing plan supports the
+required reviewers protection rule"` — and every deploy stopped at that first
+step, which was the right outcome. One has since been added; if it is ever
+removed, deploys stop again. To see the current state rather than trust this
+paragraph:
+
+```bash
+gh api repos/portofino-pizzeria/backend/environments/production-backend \
+  --jq '[.protection_rules[].type]'     # must contain "required_reviewers"
+```
+
+### Rolling back
+
+Dispatch the workflow with `sha` set to a known-good commit (Actions → Deploy
+backend → Run workflow). The commit must already be on `master`; the workflow
+refuses anything else, because a dispatch must not be a route around review
+for a change that applies migrations.
+
+What happens next depends on whether ECR already holds an image for that
+commit, which it does for anything this pipeline deployed before:
+
+| `:<sha>` in ECR? | The workflow… |
+|---|---|
+| yes (a previous deploy) | **retags** it as `:latest` — no rebuild, byte-for-byte the artifact that was known good, and it works even if the tree at that commit no longer builds |
+| no (predates the pipeline) | builds it from source, pushes `:<sha>` then `:latest` |
+
+Either way CI runs at that commit first, the deploy waits at the same
+reviewer gate, and the same verification proves `/api/health` reports that
+exact `commit` before the run goes green. The retag needs `ecr:BatchGetImage`
+on the CI role, which `../infra/github-oidc.tf` grants for precisely this.
+
+**A rollback across a migration is not a rollback.** Migrations run on boot
+and are not reversed by deploying older code; the old code would run against
+the new schema. Treat that case as a forward fix.
