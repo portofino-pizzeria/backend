@@ -459,16 +459,29 @@ jobs:
           # Letters, digits and single hyphens, starting with a letter. The
           # prefix is the ONLY name the CI role may create a snapshot under.
           id="${DB_SNAPSHOT_PREFIX}${TARGET_SHA:0:12}-$(date -u +%Y%m%d%H%M%S)"
+          # The raw /api/health value only goes into a tag once it has passed
+          # the 40-hex check: anything else (a comma, a character RDS rejects)
+          # would fail the create call and read as a snapshot failure.
+          live_commit_tag="unknown"
+          if printf '%s' "${live_commit}" | grep -qE '^[0-9a-f]{40}$'; then
+            live_commit_tag="${live_commit}"
+          fi
           aws rds create-db-cluster-snapshot \
             --db-cluster-identifier "${DB_CLUSTER_IDENTIFIER}" \
             --db-cluster-snapshot-identifier "${id}" \
             --tags "Key=purpose,Value=pre-deploy" "Key=target-commit,Value=${TARGET_SHA}" \
-                   "Key=live-commit,Value=${live_commit:-unknown}" "Key=run,Value=${GITHUB_RUN_ID}" \
+                   "Key=live-commit,Value=${live_commit_tag}" "Key=run,Value=${GITHUB_RUN_ID}" \
             --query 'DBClusterSnapshot.DBClusterSnapshotIdentifier' --output text
 
           # Wait for AVAILABLE, not for the create call to return: a snapshot
           # still creating when a migration starts is not yet a restore point.
-          aws rds wait db-cluster-snapshot-available --db-cluster-snapshot-identifier "${id}"
+          # The waiter gives up after 30 minutes with a bare non-zero exit, which
+          # under `set -e` would end the step with no explanation; say why.
+          if ! aws rds wait db-cluster-snapshot-available --db-cluster-snapshot-identifier "${id}"; then
+            echo "::error::Snapshot ${id} did not become available (waiter failed or gave up after 30 minutes)."
+            echo "::error::Refusing to deploy a possible migration without a restore point. It may still complete; check RDS."
+            exit 1
+          fi
           status="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${id}" \
             --query 'DBClusterSnapshots[0].Status' --output text)"
           if [ "${status}" != "available" ]; then
@@ -949,6 +962,7 @@ jobs:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           DB_SNAPSHOT: ${{ needs.deploy.outputs.db_snapshot }}
           DB_SNAPSHOT_PREFIX: ${{ vars.DB_SNAPSHOT_PREFIX }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
 
@@ -970,9 +984,9 @@ jobs:
           # empty value points at where to look rather than concluding.
           pattern="${DB_SNAPSHOT_PREFIX:-}${TARGET_SHA:0:12}-*"
           if [ -n "${DB_SNAPSHOT:-}" ]; then
-            restore="Database restore point, taken before the push: ${DB_SNAPSHOT}."
+            restore="Database restore point, taken before any push: ${DB_SNAPSHOT}."
           elif [ "${DEPLOY_RESULT}" = "cancelled" ] || [ "${DEPLOY_RESULT}" = "failure" ]; then
-            restore="No restore point was reported by the job. That is expected when drizzle/ was unchanged, and also what a job that stopped early, was cancelled, or lost its runner looks like — read the 'Snapshot the database' step's log, or look in RDS for ${pattern}, before assuming either way."
+            restore="No restore point was reported by the job. That is expected when drizzle/ was unchanged, and also what a job that stopped early, was cancelled, or lost its runner looks like — read the 'Snapshot the database' step's log, or look in RDS for a snapshot tagged run=${RUN_ID} (named ${pattern}; earlier runs of the same commit match that name too), before assuming either way."
           else
             restore="The deploy job did not run, so nothing was pushed."
           fi
