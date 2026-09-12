@@ -19,33 +19,37 @@
 # "a deployment succeeded" from "the code I pushed is serving traffic".
 #
 # ---------------------------------------------------------------------------
-# Why there is a human in the loop
+# No human in the loop — and what stands in for one
 # ---------------------------------------------------------------------------
-# `src/index.ts` runs `drizzle/` migrations on container boot. An automatic
-# backend deploy therefore applies schema changes to production Aurora with no
-# gate and no way back once data is written under the new schema. The `deploy`
-# job runs through a GitHub Environment with a REQUIRED REVIEWER: automatic to
-# the door, human through it. The `Verify the environment gate` step below
-# fails closed if that protection is missing, because an Environment that does
-# not exist is created silently and unprotected on first use.
+# `src/index.ts` runs `drizzle/` migrations on container boot, so every deploy
+# can apply a schema change to production Aurora. The `deploy` job used to wait
+# for a REQUIRED REVIEWER on the `production-backend` GitHub Environment, behind
+# a step that failed closed when that reviewer was missing. The operator
+# removed that gate on 2026-09-12: a deploy that waits on a human wedged the
+# repository (a red deploy on master blocks the merge train, including the PRs
+# that fix the deploy), and agent autonomy is the policy. Deploys now run on
+# every master push with no approval.
 #
-# The reviewer is READ, not assumed. When this workflow first shipped the
-# environment had no required reviewer (required reviewers on a private repo
-# in a Free organisation answered 422 from the API), and every deploy stopped
-# at that first step — the correct outcome. A reviewer has since been added,
-# but nothing here pins that: the gate step reads the environment's protection
-# rules on every run, so if the reviewer is ever removed the deploy refuses
-# again rather than silently applying migrations unattended. To check by hand:
+# What still protects the database, in order:
+#   * only history already on master deploys (`resolve` refuses anything else);
+#   * the `test` job runs the full suite at the target commit first;
+#   * a named Aurora cluster snapshot is taken BEFORE the push whenever a
+#     migration could run (see "Snapshot the database…" below) — the restore
+#     point that replaces the reviewer's judgement.
 #
-#   gh api repos/portofino-pizzeria/backend/environments/production-backend \
-#     --jq '[.protection_rules[].type]'          # must contain "required_reviewers"
-#
-# The rule became configurable because the repository was made PUBLIC on
-# 2026-09-11 — required reviewers are available on Free for public repos and
-# not for private ones. A listed rule is only evidence on a plan that enforces
-# it, and whether GitHub keeps LISTING an unenforced rule after a flip back to
-# private is not knowable from the rules read alone. So the gate step also
-# reads the repository's visibility and refuses on anything but public.
+# The job still runs through the `production-backend` Environment, with no
+# reviewer. Two things depend on that, so do not drop it casually:
+#   * the Environment's deployment-branch policy admits `master` only;
+#   * the AWS role's OIDC trust (portofino-pizzeria/infra `github-oidc.tf`)
+#     pins the environment-form claim
+#     `repo:portofino-pizzeria@294832717/backend@1355617007:environment:production-backend`
+#     (this repo issues GitHub's IMMUTABLE subject form). Removing
+#     `environment:` changes the claim to the `ref:` form and locks every
+#     deploy out until the trust policy changes with it — and a ref pin would
+#     admit any job on master without it naming the environment, which is the
+#     wider trust.
+# Note master has no branch protection: a writer's direct push deploys too.
+# The `test` job, not review, is the check that always runs.
 #
 # ---------------------------------------------------------------------------
 # Rollback: retag when the image already exists, rebuild only when it does not
@@ -61,7 +65,7 @@
 # re-hashed here and must equal ECR's own digest for it), and it does not
 # need `docker build` to succeed at that sha — a removed base-image tag or a
 # registry outage cannot block it. What it does NOT skip is CI: the `test`
-# job still runs at the target commit before the gate, so a rollback to a
+# job still runs at the target commit before the deploy, so a rollback to a
 # commit whose `npm ci` or tests no longer pass is refused there, retag or
 # not. Skipping that gate would be a separate decision this file does not
 # make. `ecr:BatchGetImage` is in the infra role's push statement for this
@@ -83,7 +87,9 @@
 #
 # A rollback across a migration is NOT a rollback (the old code runs against
 # the new schema) and must be treated as a forward fix. Nothing here can tell
-# the difference, so that judgement stays with the reviewer at the gate.
+# the difference; the pre-deploy snapshot below is taken for a rollback across
+# drizzle/ too, so a restore point exists, but choosing to restore it is a
+# decision for whoever dispatched the rollback.
 #
 # ---------------------------------------------------------------------------
 # Configuration (repository Settings -> Secrets and variables -> Actions ->
@@ -230,17 +236,10 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      # For the environment-protection read below. An explicit `permissions:`
-      # block sets every unlisted scope to `none`, and there is no workflow
-      # `permissions:` key named for the Environments API, so grant the two
-      # adjacent read scopes rather than discover at deploy time that the gate
-      # check cannot see its own gate.
-      actions: read
-      deployments: read
 
-    # The required-reviewer gate. See the header. If this Environment does not
-    # exist, GitHub creates it unprotected on first use — which is exactly what
-    # `Verify the environment gate` refuses to let pass.
+    # No reviewer on this Environment any more — see the header. It stays for
+    # its master-only branch policy and because the AWS role's OIDC trust pins
+    # the environment-form claim this line produces.
     environment:
       name: production-backend
       url: ${{ steps.verify.outputs.health_url }}
@@ -254,75 +253,6 @@ jobs:
       DB_SNAPSHOT_PREFIX: ${{ vars.DB_SNAPSHOT_PREFIX }}
 
     steps:
-      - name: Verify the environment gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ENVIRONMENT_NAME: production-backend
-        run: |
-          set -euo pipefail
-
-          # Fails closed on BOTH arms: no required reviewer, and "could not
-          # tell". This job applies database migrations to production; an
-          # unverifiable gate is not a passing one. It runs first, so a
-          # misconfiguration costs a red run and nothing else.
-          if ! rules="$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT_NAME}" \
-                          --jq '[.protection_rules[].type] | join(",")' 2>&1)"; then
-            echo "::error::Cannot read the protection rules of environment '${ENVIRONMENT_NAME}'."
-            echo "::error::That is UNKNOWN, not 'protected'. Refusing to deploy."
-            echo "::error::Response: ${rules}"
-            # 403 and 404 look alike here and have completely different fixes,
-            # so name them rather than leaving the reader to guess.
-            case "${rules}" in
-              *403*|*"not accessible"*)
-                echo "::error::403 — GITHUB_TOKEN cannot read this repository's environments."
-                echo "::error::Fix the job's permissions, or supply a fine-grained PAT with"
-                echo "::error::Environments:read as a secret. This is NOT a missing environment."
-                ;;
-              *404*|*"Not Found"*)
-                echo "::error::404 — environment '${ENVIRONMENT_NAME}' does not exist. Create it"
-                echo "::error::under Settings -> Environments and add a required reviewer."
-                ;;
-            esac
-            exit 1
-          fi
-
-          echo "Protection rules on '${ENVIRONMENT_NAME}': ${rules:-<none>}"
-
-          # A listed rule is only evidence on a plan that enforces it. Required
-          # reviewers on a PRIVATE repository need Team/Enterprise, and this
-          # organisation is on Free — so on a private repository the rule above
-          # is either impossible to have configured or of unverifiable effect.
-          # Either way that is UNKNOWN, and UNKNOWN does not deploy migrations.
-          # `metadata: read` is on every GITHUB_TOKEN, so this read needs no
-          # extra permission.
-          if ! private="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.private' 2>&1)"; then
-            echo "::error::Cannot read this repository's visibility: ${private}"
-            echo "::error::That is UNKNOWN, not 'public'. Refusing to deploy."
-            exit 1
-          fi
-          if [ "${private}" != "false" ]; then
-            echo "::error::This repository is PRIVATE (or its visibility read as '${private}')."
-            echo "::error::Required reviewers on a private repository need a GitHub Team/Enterprise"
-            echo "::error::plan; portofino-pizzeria is on Free, and the reviewer became configurable"
-            echo "::error::by making the repository public on 2026-09-11 (see the header). Make it"
-            echo "::error::public again, or upgrade the plan and remove this visibility check."
-            exit 1
-          fi
-
-          case ",${rules}," in
-            *,required_reviewers,*) ;;
-            *)
-              echo "::error::Environment '${ENVIRONMENT_NAME}' has no required reviewer."
-              echo "::error::Backend deploys run drizzle/ migrations against production Aurora on"
-              echo "::error::container boot, so an unattended deploy applies an irreversible schema"
-              echo "::error::change. Add a required reviewer under Settings -> Environments ->"
-              echo "::error::${ENVIRONMENT_NAME}. One was configured on 2026-09-11; if it is gone,"
-              echo "::error::it was removed. Check with:"
-              echo "::error::gh api repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT_NAME} --jq '[.protection_rules[].type]'"
-              exit 1
-              ;;
-          esac
-
       - name: Check the deployment configuration is present
         env:
           ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
