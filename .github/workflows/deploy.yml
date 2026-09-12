@@ -40,6 +40,13 @@
 #   gh api repos/portofino-pizzeria/backend/environments/production-backend \
 #     --jq '[.protection_rules[].type]'          # must contain "required_reviewers"
 #
+# The rule became configurable because the repository was made PUBLIC on
+# 2026-09-11 — required reviewers are available on Free for public repos and
+# not for private ones. A listed rule is only evidence on a plan that enforces
+# it, and whether GitHub keeps LISTING an unenforced rule after a flip back to
+# private is not knowable from the rules read alone. So the gate step also
+# reads the repository's visibility and refuses on anything but public.
+#
 # ---------------------------------------------------------------------------
 # Rollback: retag when the image already exists, rebuild only when it does not
 # ---------------------------------------------------------------------------
@@ -88,6 +95,9 @@
 #   APPRUNNER_SERVICE_ARN  (required)  arn:aws:apprunner:<region>:<acct>:service/portofino-production-api/<id>
 #   AWS_REGION             (optional)  defaults to eu-central-1
 #   ECR_REPOSITORY         (optional)  defaults to portofino-production-backend
+#   PUBLIC_API_URL         (optional)  https://api.<domain>; when set, a verified
+#                                      deploy also checks the custom domain —
+#                                      non-gating, see the last step
 #
 # `APPRUNNER_SERVICE_ARN` is a variable rather than something looked up by
 # name because the `portofino-ci-backend` role is granted `DescribeService` and
@@ -275,6 +285,28 @@ jobs:
           fi
 
           echo "Protection rules on '${ENVIRONMENT_NAME}': ${rules:-<none>}"
+
+          # A listed rule is only evidence on a plan that enforces it. Required
+          # reviewers on a PRIVATE repository need Team/Enterprise, and this
+          # organisation is on Free — so on a private repository the rule above
+          # is either impossible to have configured or of unverifiable effect.
+          # Either way that is UNKNOWN, and UNKNOWN does not deploy migrations.
+          # `metadata: read` is on every GITHUB_TOKEN, so this read needs no
+          # extra permission.
+          if ! private="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.private' 2>&1)"; then
+            echo "::error::Cannot read this repository's visibility: ${private}"
+            echo "::error::That is UNKNOWN, not 'public'. Refusing to deploy."
+            exit 1
+          fi
+          if [ "${private}" != "false" ]; then
+            echo "::error::This repository is PRIVATE (or its visibility read as '${private}')."
+            echo "::error::Required reviewers on a private repository need a GitHub Team/Enterprise"
+            echo "::error::plan; portofino-pizzeria is on Free, and the reviewer became configurable"
+            echo "::error::by making the repository public on 2026-09-11 (see the header). Make it"
+            echo "::error::public again, or upgrade the plan and remove this visibility check."
+            exit 1
+          fi
+
           case ",${rules}," in
             *,required_reviewers,*) ;;
             *)
@@ -686,6 +718,54 @@ jobs:
             echo "| Health | [\`${health_url}\`](${health_url}) reports \`commit: ${TARGET_SHA}\` |"
             echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      # The assertion above uses App Runner's DEFAULT domain, which is the
+      # right primary check: it is the service itself, with nothing in front.
+      # But diners reach `https://api.<domain>`, and a broken custom-domain
+      # association passes that check green. So: a second look through the
+      # front door, NON-gating — the deploy already succeeded, and failing the
+      # job here would only make a DNS problem read as a bad build.
+      #
+      # The URL is an optional repository variable rather than an SSM read on
+      # purpose: `infra/github-oidc.tf` grants this role no `ssm:GetParameter`,
+      # by design. A stale variable produces a warning, not a red deploy —
+      # the correct blast radius for a check that does not gate.
+      # ---------------------------------------------------------------------
+      - name: Check the custom domain serves the same commit (non-gating)
+        if: ${{ vars.PUBLIC_API_URL != '' }}
+        # Belt to the script's braces: an unforeseen non-zero here must not
+        # turn a DNS check into a red deploy.
+        continue-on-error: true
+        env:
+          PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          url="${PUBLIC_API_URL%/}/api/health"
+          # Three outcomes, kept apart: unreachable; reachable but no `commit`
+          # (an image that predates the marker, or a build without the arg);
+          # and a commit that is not ours.
+          if body="$(curl -fsS --max-time 15 "${url}" 2>/dev/null)"; then
+            current="$(printf '%s' "${body}" | jq -r '.commit // "<no commit field>"' 2>/dev/null || echo "<not JSON>")"
+          else
+            current="<unreachable>"
+          fi
+          if [ "${current}" = "${TARGET_SHA}" ]; then
+            echo "Custom domain ${url} reports commit ${TARGET_SHA}."
+            {
+              echo ""
+              echo "Custom domain [\`${url}\`](${url}) reports \`commit: ${TARGET_SHA}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::${url} reports commit '${current}', not '${TARGET_SHA}'."
+            echo "::warning::The App Runner default domain IS verified, so the deploy itself is fine;"
+            echo "::warning::this is the custom-domain association (infra: dns.tf / backend-service.tf)"
+            echo "::warning::or a stale PUBLIC_API_URL variable. Diners use this host — look at it."
+            {
+              echo ""
+              echo ":warning: Custom domain [\`${url}\`](${url}) reports \`${current}\`, not this commit — see the run annotations."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # ---------------------------------------------------------------------------
   # Before this plan, a stale site was invisible. Without this, a FAILED deploy

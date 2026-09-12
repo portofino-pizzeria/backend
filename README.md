@@ -111,6 +111,7 @@ Repository → Settings → Secrets and variables → Actions → **Variables**:
 | `APPRUNNER_SERVICE_ARN` | yes | — |
 | `AWS_REGION` | no | `eu-central-1` |
 | `ECR_REPOSITORY` | no | `portofino-production-backend` |
+| `PUBLIC_API_URL` | no | — (`https://api.<domain>`; when set, a verified deploy also checks the custom domain reports the same commit — **non-gating**, a warning only, since the App Runner domain is the service itself and a mismatch here is a DNS / domain-association problem, not a bad build) |
 
 Optional secret `DEPLOY_ALERT_WEBHOOK` — a Slack/Teams incoming webhook that a
 failed deploy POSTs to. Without it a failed deploy notifies nobody, which is
@@ -141,6 +142,17 @@ paragraph:
 gh api repos/portofino-pizzeria/backend/environments/production-backend \
   --jq '[.protection_rules[].type]'     # must contain "required_reviewers"
 ```
+
+The rule became configurable because the repository was made **public** on
+2026-09-11 — required reviewers are available on Free for public repositories
+and not for private ones. Whether GitHub keeps listing an unenforced rule after
+a flip back to private is not knowable from the rules read, so the gate step
+also reads the repository's visibility and refuses to deploy while it is
+private. What public costs: `ci.yml` runs for pull requests from forks, with a
+read-only token and no secrets; the deploy workflow is `push` /
+`workflow_dispatch` only, so it never runs for a fork, and the CI role's trust
+policy is pinned to the `production-backend` environment subject, which only a
+job that passed the gate can present.
 
 ### Rolling back
 
