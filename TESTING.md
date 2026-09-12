@@ -36,11 +36,14 @@ The override exists only for a CI database you cannot rename.
 `DATABASE_URL`, `KITCHEN_TOKEN`, `OWNER_MENU_TOKEN`, `STRIPE_SECRET_KEY` and
 `STRIPE_WEBHOOK_SECRET` are all controlled by the harness
 (`test/support/env.ts`), so the suite behaves the same whatever is in your
-shell. In particular `KITCHEN_TOKEN` is cleared, which leaves the kitchen
-routes unauthenticated under test — and `OWNER_MENU_TOKEN` is **set**
-(`TEST_OWNER_MENU_TOKEN`), because the owner's menu editor fails CLOSED and
-would otherwise refuse every request. `test/admin-menu.test.ts` clears it again,
-in a controlled way, for the fail-closed test itself.
+shell. Both guards fail CLOSED, so the harness has to opt each one in to
+exercise its routes at all: `KITCHEN_TOKEN` is cleared **and**
+`KITCHEN_AUTH_DISABLED=1` is set, which runs the kitchen routes with no auth;
+`OWNER_MENU_TOKEN` is **set** (`TEST_OWNER_MENU_TOKEN`), because the owner's
+editor has no opt-out. `test/kitchen-auth.test.ts` and `test/admin-menu.test.ts`
+each undo their own opt-in again, in a controlled way, for the fail-closed test
+itself — through the shared `withConfig` in `test/support/config.ts`, which
+patches `config` in place for one test and restores it after.
 
 ## How the database fixture works
 
@@ -174,6 +177,8 @@ instance with logging off. Close it in `afterAll`.
 | `test/harness.test.ts` | The harness itself: it is pointed at a test database, it refuses a non-test one, tests are isolated from each other, fixture defaults behave |
 | `test/menu.test.ts` | `GET /api/menu` — payload shape, category/item/variant ordering, availability filtering, items with zero variants, and allergen resolution (a code with no legend row comes back `resolved: false` / `unbekannt`, never dropped) |
 | `test/orders.test.ts` | `POST /api/orders` — per-variant server-side pricing, client-supplied prices ignored, every refusal path (unknown variant, variant of another item, missing variant at the zod door, unknown item, unavailable item, empty order, bad quantity, no partial write), and that order lines are snapshots that survive a later menu edit or deletion |
+| `test/health.test.ts` | `GET /api/health` — the deploy workflow's proof surface: `commit` (present, degrades to `"unknown"` without the build arg) and `kitchen` (`token` / `auth-disabled` / `unconfigured`, and that it never carries the token itself) |
+| `test/kitchen-auth.test.ts` | The kitchen guard fails CLOSED: no token and no opt-out refuses with no order data in the body; the explicit `KITCHEN_AUTH_DISABLED` opt-out serves; a configured token is required even with the opt-out set, and a wrong, same-length, prefix or empty bearer is refused |
 | `test/admin-menu.test.ts` | `/api/admin/menu/*` — the owner's editor. The fail-closed credential (D5), the editor's own read, the **four safety properties** below, that editing the menu never rewrites order history, and the everyday item / category / allergen-legend edits |
 
 ## The editor's four safety properties

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { config } from '../src/config.js';
 import { buildApp } from '../src/app.js';
+import { withConfig } from './support/config';
 
 /**
  * The kitchen guard fails CLOSED.
@@ -15,24 +15,6 @@ import { buildApp } from '../src/app.js';
  * `test/support/env.ts`), so each case here restores the real default around
  * itself rather than relying on ambient state.
  */
-
-const mutableConfig = config as unknown as {
-  kitchenToken: string;
-  kitchenAuthDisabled: boolean;
-};
-
-async function withConfig<T>(
-  patch: Partial<typeof mutableConfig>,
-  run: () => Promise<T>,
-): Promise<T> {
-  const saved = { ...mutableConfig };
-  Object.assign(mutableConfig, patch);
-  try {
-    return await run();
-  } finally {
-    Object.assign(mutableConfig, saved);
-  }
-}
 
 async function getKitchenOrders(headers: Record<string, string> = {}) {
   const app = await buildApp();
@@ -81,6 +63,16 @@ describe('kitchen auth', () => {
         expect(ok.statusCode).toBe(200);
         const wrong = await getKitchenOrders({ authorization: 'Bearer falsch' });
         expect(wrong.statusCode).toBe(401);
+        // Same length as the real token, one byte off — the arm `timingSafeEqual`
+        // itself decides, as opposed to the length check above it.
+        const close = await getKitchenOrders({ authorization: 'Bearer kuechen-geheimniS' });
+        expect(close.statusCode).toBe(401);
+        // A prefix of the real token: the compare must not accept a partial match.
+        const prefix = await getKitchenOrders({ authorization: 'Bearer kuechen' });
+        expect(prefix.statusCode).toBe(401);
+        // An empty bearer never matches, even an (impossible) empty token.
+        const empty = await getKitchenOrders({ authorization: 'Bearer ' });
+        expect(empty.statusCode).toBe(401);
       },
     );
   });

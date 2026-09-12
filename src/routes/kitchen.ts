@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { config } from '../config.js';
 import { badRequest, unauthorized } from '../lib/http-errors.js';
+import { secretsMatch } from '../lib/secrets.js';
 import { listKitchenOrders, setOrderStatus } from '../lib/order-service.js';
 
 /**
@@ -31,7 +32,9 @@ async function requireKitchenAuth(req: FastifyRequest, _reply: FastifyReply) {
   }
   const header = req.headers.authorization ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (token !== config.kitchenToken) throw unauthorized('Invalid kitchen token.');
+  if (!token || !secretsMatch(token, config.kitchenToken)) {
+    throw unauthorized('Invalid kitchen token.');
+  }
 }
 
 const statusSchema = z.object({

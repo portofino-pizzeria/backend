@@ -52,7 +52,9 @@ export const config = {
     webhookSecret: env('STRIPE_WEBHOOK_SECRET'),
   },
 
-  // Shared secret for the kitchen dashboard. Empty disables the check (dev).
+  // Shared secret for the kitchen dashboard. REQUIRED in any deployed
+  // environment: empty does not disable the check, it makes the guard refuse
+  // every request (see `kitchenAuthDisabled` for the one, explicit, exception).
   kitchenToken: env('KITCHEN_TOKEN'),
 
   /**
@@ -75,11 +77,11 @@ export const config = {
 
   // Shared secret for the owner's menu editor (/api/admin/menu/*).
   //
-  // Deliberately NOT `kitchenToken`, and deliberately NOT skippable when empty.
-  // The kitchen guard protects a screen that is already behind the counter and
-  // turns itself off in dev; this one guards the surface that writes the
-  // allergens and prices a diner reads, from a phone, after close. Empty means
-  // every admin write is REFUSED — see `requireOwnerAuth` in
+  // Deliberately NOT `kitchenToken` (decision D5): this one guards the surface
+  // that writes the allergens and prices a diner reads, from a phone, after
+  // close, and it must not be unlocked by the same secret a kitchen screen
+  // holds. Like the kitchen guard it fails CLOSED — empty means every admin
+  // write is REFUSED, with no opt-out at all — see `requireOwnerAuth` in
   // routes/admin-menu.ts. Set it to enable the editor.
   ownerMenuToken: env('OWNER_MENU_TOKEN'),
 
@@ -89,3 +91,22 @@ export const config = {
 } as const;
 
 export const stripeEnabled = Boolean(config.stripe.secretKey);
+
+/**
+ * How the kitchen guard will behave, from the two values above.
+ *
+ * - `token`: `KITCHEN_TOKEN` is set; every kitchen request must carry it.
+ * - `auth-disabled`: no token and `KITCHEN_AUTH_DISABLED=1` — the kitchen
+ *   routes serve customer PII to anyone. Local dev and CI only.
+ * - `unconfigured`: no token and no opt-out — every kitchen request is refused.
+ *
+ * Reported by `/api/health` so the deploy pipeline can assert on it, and
+ * logged at boot. A function rather than a constant because the test suite
+ * patches `config` at runtime and reads the mode back.
+ */
+export type KitchenAuthMode = 'token' | 'auth-disabled' | 'unconfigured';
+
+export function kitchenAuthMode(): KitchenAuthMode {
+  if (config.kitchenToken) return 'token';
+  return config.kitchenAuthDisabled ? 'auth-disabled' : 'unconfigured';
+}

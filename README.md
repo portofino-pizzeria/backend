@@ -19,7 +19,8 @@ Customer (consumed by the mobile app — contract mirrors `../mobile/src/lib`):
 | `GET`  | `/api/payments/providers` | `{ stripe, paypal, mockFallback }` |
 | `POST` | `/api/payments/checkout` | Start hosted checkout → `{ url, provider }` |
 
-Kitchen dashboard (ours — Bearer `KITCHEN_TOKEN` when set):
+Kitchen dashboard (ours — Bearer `KITCHEN_TOKEN`, **required**; the guard fails
+closed, see "The kitchen guard" below):
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -40,14 +41,37 @@ Prereqs: **Node ≥ 20** and **Docker** (for local Postgres).
 
 ```bash
 npm install
-cp .env.example .env          # defaults work as-is for local/mock mode
+cp .env.example .env          # defaults work as-is for local/mock mode …
+                              # … except the kitchen dashboard: see below
 npm run db:up                 # start Postgres (docker compose)
 npm run db:generate           # generate the initial SQL migration from schema
-npm run dev                   # migrates + seeds + serves on :4000
+npm run dev                   # loads .env, migrates + seeds + serves on :4000
 ```
 
 Then start the app in `../mobile` (`npm run web`) — it auto-targets
 `http://localhost:4000`.
+
+### The kitchen guard
+
+`/api/kitchen/*` returns every order's customer name, phone number and delivery
+address, so its guard **fails closed**: with `KITCHEN_TOKEN` unset it refuses
+every request rather than serving that data unauthenticated. There is no
+"blank means open" — a deployment that forgets the token loses the kitchen
+dashboard, never the customers' data.
+
+For local dev, pick one in `.env`:
+
+- `KITCHEN_AUTH_DISABLED=1` — no auth at all. The dashboard just works. Never
+  set this anywhere but a laptop or CI; `/api/health` reports it as
+  `kitchen: "auth-disabled"` and the deploy workflow fails a deploy that does.
+- `KITCHEN_TOKEN=<anything>` — the real behaviour. The dashboard prompts for
+  the token once and remembers it in the browser.
+
+With neither, the dashboard's token prompt can never succeed (the server is
+refusing, not checking), and the server says so at boot and in
+`GET /api/health` → `kitchen: "unconfigured"`. The owner's menu editor
+(`/api/admin/menu/*`, `OWNER_MENU_TOKEN`) fails closed the same way and has no
+opt-out at all.
 
 ### Payments in dev
 
@@ -73,7 +97,9 @@ zero, on every run — there is no separate migration step, deliberately.
 Built for a container runtime (AWS App Runner) + managed Postgres (Aurora
 Serverless v2), provisioned by the Terraform in `../infra`. `npm run build`
 emits `dist/`; `npm start` runs it. Set the env vars from `.env.example` in the
-service configuration.
+service configuration (`npm start` does not read `.env`; only `npm run dev`
+does). `KITCHEN_TOKEN` and `OWNER_MENU_TOKEN` are the two that are not
+optional there — both guards fail closed.
 
 `.github/workflows/deploy.yml` ships it: on a push to `master` (or a
 `workflow_dispatch` naming an older `sha`, which is how you roll back — a
@@ -87,7 +113,13 @@ observes the *old* service and passes; an identical image digest fires no
 deployment at all and that poll still passes. Instead the workflow snapshots
 the service's deployment operations before the push, waits for one that was not
 in that snapshot, waits for it to reach `SUCCEEDED`, and only then asserts that
-`GET /api/health` reports the exact commit it built.
+`GET /api/health` reports the exact commit it built — and, once it does, that
+its `kitchen` field reads `"token"`: the commit proves the code, this proves the
+configuration it runs under. `"auth-disabled"` (the local-dev opt-out reached
+production, so customer PII is on the open internet) and `"unconfigured"` (no
+token reached the service, so the dashboard is dead) both fail the run; a build
+too old to report the field is noted and not failed, so a rollback stays
+possible.
 
 ### The `commit` field
 
