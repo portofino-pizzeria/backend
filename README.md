@@ -149,6 +149,8 @@ Repository → Settings → Secrets and variables → Actions → **Variables**:
 | `AWS_REGION` | no | `eu-central-1` |
 | `ECR_REPOSITORY` | no | `portofino-production-backend` |
 | `PUBLIC_API_URL` | no | — (`https://api.<domain>`; when set, a verified deploy also checks the custom domain reports the same commit — **non-gating**, a warning only, since the App Runner domain is the service itself and a mismatch here is a DNS / domain-association problem, not a bad build) |
+| `DB_CLUSTER_IDENTIFIER` | yes | — (infra output `db_cluster_identifier`; the Aurora cluster snapshotted before each deploy) |
+| `DB_SNAPSHOT_PREFIX` | yes | — (infra output `db_pre_deploy_snapshot_prefix`; the CI role may create snapshots only under this name prefix) |
 
 Optional secret `DEPLOY_ALERT_WEBHOOK` — a Slack/Teams incoming webhook that a
 failed deploy POSTs to. Without it a failed deploy notifies nobody, which is
@@ -220,4 +222,101 @@ immediately; tick **`rebuild`** to push a fresh digest for the same commit.
 
 **A rollback across a migration is not a rollback.** Migrations run on boot
 and are not reversed by deploying older code; the old code would run against
-the new schema. Treat that case as a forward fix.
+the new schema. Treat that case as a forward fix — or, when the data itself has
+to go back, restore the pre-deploy snapshot below.
+
+### The database restore point
+
+Before a deploy that could run a migration, the workflow takes a manual Aurora
+cluster snapshot named `<DB_SNAPSHOT_PREFIX><sha, 12 chars>-<UTC timestamp>` and
+waits for it to become `available`; if it cannot, the deploy stops before the
+push. "Could run a migration" means `drizzle/` differs between the commit
+`/api/health` reports as live and the target — in either direction, so a
+rollback across a migration counts — or the live commit cannot be established.
+A deploy whose `drizzle/` matches the live commit takes no snapshot. The name is
+in the run summary and, when a deploy fails, in the alert.
+
+The CI role may create snapshots under the prefix and never delete one
+(`../infra/github-oidc.tf`, `SnapshotProductionDbBeforeDeploy`). They do not
+expire, so pruning old ones is a manual job — and not an optional one: RDS
+allows **100 manual cluster snapshots per region** by default, and at that limit
+the snapshot step fails with `SnapshotQuotaExceeded` and, failing closed, blocks
+every deploy, forward fixes included, until some are deleted.
+
+#### Restoring it
+
+Everything written after the snapshot is lost by a restore, so it is for a
+migration that destroyed data, not for one that merely broke the code. It is an
+infra operation, not a workflow dispatch, and **this procedure has not been
+rehearsed** — read each command's output before running the next. The order
+matters:
+
+1. **Stop the destructive image from booting again first.** Migrations run on
+   boot, and `:latest` still carries the one that did the damage; any new
+   instance (a redeploy, or App Runner scaling out) would run it against the
+   restored database too. Dispatch this workflow with `sha` set to the last
+   commit before that migration. Its code runs against the migrated schema until
+   step 2 pauses the service, so expect errors in that short window; from step 2
+   to step 5 nothing is served at all. (That run also snapshots the damaged
+   database, which is worth keeping.)
+2. **Stop traffic until step 5.** Renaming a cluster does not close the
+   connections already open to it: each backend instance holds a pool
+   (`src/db/client.ts`), so orders placed during the restore would land on the
+   damaged cluster, read back as normal, and vanish once the backend reconnects
+   to the restored one. Pause the service —
+   `aws apprunner pause-service --service-arn <APPRUNNER_SERVICE_ARN>` — and
+   confirm it reports `PAUSED` before going on.
+3. **Move the damaged cluster aside**, one resource at a time — each rename
+   finished before the next command:
+   ```bash
+   aws rds modify-db-cluster --db-cluster-identifier portofino-production-db \
+     --new-db-cluster-identifier portofino-production-db-damaged --apply-immediately
+   # The CLI waiter gives up on "not found", so first poll until the new name answers.
+   until aws rds describe-db-clusters --db-cluster-identifier portofino-production-db-damaged >/dev/null; do sleep 15; done
+   aws rds wait db-cluster-available --db-cluster-identifier portofino-production-db-damaged
+
+   aws rds modify-db-instance --db-instance-identifier portofino-production-db-1 \
+     --new-db-instance-identifier portofino-production-db-damaged-1 --apply-immediately
+   until aws rds describe-db-instances --db-instance-identifier portofino-production-db-damaged-1 >/dev/null; do sleep 15; done
+   aws rds wait db-instance-available --db-instance-identifier portofino-production-db-damaged-1
+   ```
+   Without `--apply-immediately` a rename waits for the maintenance window, and
+   the restore below fails on an identifier that is still taken. If an `until`
+   loop never ends, read the error it prints on each pass: either the rename did
+   not happen, or the CLI cannot reach RDS (profile, region, expired session).
+4. **Restore under the original identifiers**, so Terraform's state and the
+   cluster endpoint — and with it the Terraform-owned `database-url` secret
+   (`../infra/database.tf`) — match again. A bare restore does not carry the
+   network or scaling settings, so pass them:
+   ```bash
+   aws rds restore-db-cluster-from-snapshot \
+     --db-cluster-identifier portofino-production-db \
+     --snapshot-identifier <restore point> \
+     --engine aurora-postgresql --engine-version 16.8 \
+     --db-subnet-group-name portofino-production-db \
+     --vpc-security-group-ids <id of aws_security_group.db: terraform state show aws_security_group.db> \
+     --serverless-v2-scaling-configuration MinCapacity=<db_min_capacity>,MaxCapacity=<db_max_capacity>
+   aws rds create-db-instance --db-instance-identifier portofino-production-db-1 \
+     --db-cluster-identifier portofino-production-db \
+     --db-instance-class db.serverless --engine aurora-postgresql
+   ```
+   Then `aws rds wait db-instance-available --db-instance-identifier portofino-production-db-1`.
+5. **Reconnect and reconcile.** `aws apprunner resume-service --service-arn <APPRUNNER_SERVICE_ARN>`
+   — resumed instances open fresh connections to the restored cluster; if
+   `/api/health` answers but orders still look wrong, start a deployment to
+   force new instances. Then run `terraform plan` in `../infra`: in-place changes
+   are expected, a *replacement* of the cluster means the restore diverged from
+   the configuration — stop and look before applying. Pause and resume have not
+   been exercised on this service; check each reports the state it names.
+6. Forward-fix the migration on `master` before deploying anything newer than
+   the commit from step 1.
+7. **Dispose of the damaged cluster** once nothing more is needed from it. It
+   is outside Terraform's state and still billed. Delete the instance, then the
+   cluster with a final snapshot, which `delete-db-cluster` requires you to
+   choose explicitly:
+   ```bash
+   aws rds delete-db-instance --db-instance-identifier portofino-production-db-damaged-1
+   aws rds wait db-instance-deleted --db-instance-identifier portofino-production-db-damaged-1
+   aws rds delete-db-cluster --db-cluster-identifier portofino-production-db-damaged \
+     --final-db-snapshot-identifier portofino-production-db-damaged-final
+   ```
