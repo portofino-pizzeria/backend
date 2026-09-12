@@ -6,13 +6,12 @@
 // lib/menu-admin-service.ts for the four safety properties this surface has to
 // hold.
 
-import { timingSafeEqual } from 'node:crypto';
-
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import { config } from '../config.js';
 import { badRequest, unauthorized } from '../lib/http-errors.js';
+import { secretsMatch } from '../lib/secrets.js';
 import {
   createCategory,
   createMenuItem,
@@ -28,32 +27,18 @@ import {
 } from '../lib/menu-admin-service.js';
 
 /**
- * Compare two secrets without leaking their contents through timing.
- *
- * `timingSafeEqual` throws on a length mismatch, which would itself be a
- * timing side-channel, so a wrong-length guess is compared against a
- * same-length buffer and then rejected.
- */
-function secretsMatch(candidate: string, expected: string): boolean {
-  const a = Buffer.from(candidate, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length) {
-    timingSafeEqual(b, b);
-    return false;
-  }
-  return timingSafeEqual(a, b);
-}
-
-/**
  * The owner guard. **It fails CLOSED.**
  *
- * This is the one difference from `routes/kitchen.ts` that matters most, and
- * decision D5 names it: the kitchen guard skips its check entirely when
- * `KITCHEN_TOKEN` is unset, which is defensible for a screen already behind the
- * counter. This surface writes the allergens and prices a diner reads. An
- * unset `OWNER_MENU_TOKEN` therefore refuses every admin request instead of
- * opening the editor to the whole internet — a misconfigured deployment loses
- * the editor, never the menu.
+ * Decision D5 gave this surface its own credential and its own namespace: it
+ * writes the allergens and prices a diner reads, so an unset `OWNER_MENU_TOKEN`
+ * refuses every admin request instead of opening the editor to the whole
+ * internet — a misconfigured deployment loses the editor, never the menu.
+ *
+ * When D5 was taken, the kitchen guard (`routes/kitchen.ts`) was the contrast:
+ * it skipped its check entirely when `KITCHEN_TOKEN` was unset. It no longer
+ * does — it fails closed the same way, and shares `secretsMatch` — so the two
+ * guards now differ only in WHICH secret they check, which is what D5 was
+ * actually about.
  */
 async function requireOwnerAuth(
   req: FastifyRequest,

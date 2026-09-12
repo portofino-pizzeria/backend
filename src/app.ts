@@ -11,7 +11,7 @@
 import cors from '@fastify/cors';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 
-import { config, stripeEnabled } from './config.js';
+import { config, kitchenAuthMode, stripeEnabled } from './config.js';
 import { HttpError } from './lib/http-errors.js';
 import { adminMenuRoutes } from './routes/admin-menu.js';
 import { kitchenRoutes } from './routes/kitchen.js';
@@ -46,10 +46,17 @@ export async function buildApp(
   // one now serving traffic: `commit` is baked into the image at build time,
   // so a workflow can assert on it after a deploy. `'unknown'` when the image
   // was built without the build arg (see config.ts) — honest, never a crash.
+  //
+  // `kitchen` is the same idea for configuration rather than code: it reports
+  // how the kitchen guard is armed (`token` | `auth-disabled` | `unconfigured`,
+  // see `kitchenAuthMode`) so the deploy can refuse to call a deployment
+  // verified while `/api/kitchen/*` is either open to the internet or dead.
+  // It reveals nothing a single unauthenticated request would not.
   app.get('/api/health', async () => ({
     status: 'ok',
     commit: config.commit,
     stripe: stripeEnabled ? 'live-keys' : 'mock',
+    kitchen: kitchenAuthMode(),
   }));
 
   await app.register(menuRoutes);

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import { buildApp } from './app.js';
-import { config } from './config.js';
+import { config, kitchenAuthMode } from './config.js';
 import { runMigrations } from './db/migrate.js';
 import { seedMenu } from './db/seed.js';
 
@@ -11,6 +11,7 @@ async function main() {
   // Start serving immediately so the platform health check (/api/health, which
   // doesn't touch the DB) passes even while the database is still coming up.
   await app.listen({ port: config.port, host: '0.0.0.0' });
+  logKitchenAuthMode(app);
 
   // The same build marker /api/health serves, in the service log: App Runner
   // keeps logs per revision, so a log that names its commit is the fastest
@@ -22,6 +23,31 @@ async function main() {
   // a freshly-provisioned Aurora endpoint can take a bit to resolve/accept
   // connections. Idempotent, so safe on every boot.
   await initDatabase(app);
+}
+
+/**
+ * Say, once, at boot, how the kitchen guard is armed. Both non-`token` modes
+ * are wrong in a deployed environment — one serves customer PII to anyone, the
+ * other refuses the kitchen dashboard outright — and a log line at start is
+ * the earliest place an operator reading a deploy can see either.
+ */
+function logKitchenAuthMode(app: FastifyInstance): void {
+  switch (kitchenAuthMode()) {
+    case 'token':
+      return;
+    case 'auth-disabled':
+      app.log.warn(
+        'Kitchen auth is DISABLED (KITCHEN_AUTH_DISABLED=1): /api/kitchen/* serves ' +
+          'customer names, phone numbers and addresses unauthenticated. Local dev only.',
+      );
+      return;
+    case 'unconfigured':
+      app.log.warn(
+        'KITCHEN_TOKEN is not set: every /api/kitchen/* request is refused. Set it ' +
+          '(or, in local dev only, KITCHEN_AUTH_DISABLED=1) to serve the kitchen dashboard.',
+      );
+      return;
+  }
 }
 
 async function initDatabase(app: FastifyInstance): Promise<void> {

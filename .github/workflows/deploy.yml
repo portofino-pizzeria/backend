@@ -675,6 +675,42 @@ jobs:
           fi
 
           echo "Verified: ${TARGET_SHA} is live."
+
+          # --- 4. The guard on customer PII is armed ---------------------------
+          # Step 3 proves the CODE; this proves the CONFIGURATION it runs under.
+          # `kitchen` (src/config.ts `kitchenAuthMode`) is `token` when
+          # KITCHEN_TOKEN is set. Either other value is a broken deployment:
+          # `auth-disabled` means KITCHEN_AUTH_DISABLED=1 reached production and
+          # /api/kitchen/orders is serving every order's customer name, phone
+          # number and address to anyone on the internet; `unconfigured` means
+          # the kitchen dashboard refuses every request. Neither is a deploy to
+          # call verified, so both fail this job — the deployment itself has
+          # already happened, and a red run (plus the `alert` job) is how anyone
+          # finds out. An EMPTY read means the live build predates the field
+          # (a rollback to an older commit): reported, not failed, so the
+          # rollback path stays open.
+          kitchen="$(curl -fsS --max-time 15 "${health_url}" 2>/dev/null | jq -r '.kitchen // ""' 2>/dev/null || true)"
+          case "${kitchen}" in
+            token)
+              echo "Verified: the kitchen guard is armed (kitchen: token)."
+              ;;
+            "")
+              echo "::notice::${health_url} reports no 'kitchen' field — this build predates it, so the guard's posture was not checked."
+              ;;
+            auth-disabled)
+              echo "::error::${health_url} reports kitchen: auth-disabled — KITCHEN_AUTH_DISABLED=1 is set on the service, so"
+              echo "::error::/api/kitchen/orders is serving customer names, phone numbers and addresses UNAUTHENTICATED."
+              echo "::error::Remove KITCHEN_AUTH_DISABLED from the App Runner configuration (infra/backend-service.tf) and redeploy."
+              exit 1
+              ;;
+            *)
+              echo "::error::${health_url} reports kitchen: '${kitchen}' — KITCHEN_TOKEN is not reaching the service, so every"
+              echo "::error::kitchen request is refused and the dashboard is dead. It is wired from the kitchen_token secret in"
+              echo "::error::infra/backend-service.tf; check that wiring and redeploy."
+              exit 1
+              ;;
+          esac
+
           {
             echo "### Backend deploy — verified"
             echo ""
@@ -684,6 +720,7 @@ jobs:
             echo "| Image | ${STRATEGY} |"
             echo "| App Runner operation | \`${op_id}\` |"
             echo "| Health | [\`${health_url}\`](${health_url}) reports \`commit: ${TARGET_SHA}\` |"
+            echo "| Kitchen guard | \`kitchen: ${kitchen:-<not reported by this build>}\` |"
             echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"
           } >> "$GITHUB_STEP_SUMMARY"
 

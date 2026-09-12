@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createTestApp } from './support/app';
+import { withConfig } from './support/config';
 
 let app: FastifyInstance;
 
@@ -47,5 +48,46 @@ describe('GET /api/health', () => {
     // meant to pin proves nothing. `test/support/env.ts` deletes COMMIT_SHA, so
     // this is the no-build-arg path, which must never throw and never 500.
     expect((await getHealth()).commit).toBe('unknown');
+  });
+
+  // `kitchen` reports how the kitchen guard is armed, so the deploy workflow
+  // can refuse to call a deployment verified while `/api/kitchen/*` is either
+  // open to the internet or refusing everything. Literals, not
+  // `kitchenAuthMode()` — the workflow matches on these exact strings.
+  describe('the kitchen field', () => {
+    it('reads "auth-disabled" under the suite’s own environment', async () => {
+      // `test/support/env.ts` clears KITCHEN_TOKEN and sets
+      // KITCHEN_AUTH_DISABLED=1 — the local-dev shape, and the one that must
+      // never reach production. The field is how a deploy would notice.
+      expect((await getHealth()).kitchen).toBe('auth-disabled');
+    });
+
+    it('reads "token" when KITCHEN_TOKEN is set — the only deployed value', async () => {
+      await withConfig({ kitchenToken: 'kuechen-geheimnis' }, async () => {
+        expect((await getHealth()).kitchen).toBe('token');
+      });
+      // A set token wins even with the opt-out also present: the guard still
+      // requires the bearer (test/kitchen-auth.test.ts pins that), so the
+      // report must say so too.
+      await withConfig(
+        { kitchenToken: 'kuechen-geheimnis', kitchenAuthDisabled: true },
+        async () => {
+          expect((await getHealth()).kitchen).toBe('token');
+        },
+      );
+    });
+
+    it('reads "unconfigured" when there is neither a token nor the opt-out', async () => {
+      await withConfig({ kitchenToken: '', kitchenAuthDisabled: false }, async () => {
+        expect((await getHealth()).kitchen).toBe('unconfigured');
+      });
+    });
+
+    it('never carries the token itself', async () => {
+      await withConfig({ kitchenToken: 'kuechen-geheimnis' }, async () => {
+        const res = await app.inject({ method: 'GET', url: '/api/health' });
+        expect(res.body).not.toContain('kuechen-geheimnis');
+      });
+    });
   });
 });

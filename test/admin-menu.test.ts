@@ -15,9 +15,9 @@
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { config } from '../src/config.js';
 import type { AdminMenu, Menu, Order } from '../src/types.js';
 import { createTestApp } from './support/app';
+import { withConfig } from './support/config';
 import { TEST_OWNER_MENU_TOKEN } from './support/env';
 import {
   seedCategory,
@@ -35,28 +35,6 @@ beforeAll(async () => {
 afterAll(async () => {
   await app.close();
 });
-
-// `config` is a frozen-looking `as const` literal but is a plain object at
-// runtime. Two tests need to change a credential and put it back — the
-// fail-closed test cannot be written any other way, because the value is read
-// once from the environment at module evaluation.
-const mutableConfig = config as unknown as {
-  ownerMenuToken: string;
-  kitchenToken: string;
-};
-
-async function withConfig<T>(
-  patch: Partial<typeof mutableConfig>,
-  run: () => Promise<T>,
-): Promise<T> {
-  const saved = { ...mutableConfig };
-  Object.assign(mutableConfig, patch);
-  try {
-    return await run();
-  } finally {
-    Object.assign(mutableConfig, saved);
-  }
-}
 
 interface AdminResponse {
   statusCode: number;
