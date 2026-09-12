@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildApp } from '../src/app.js';
+import { createTestApp } from './support/app';
 import { withConfig } from './support/config';
 
 /**
@@ -17,7 +17,7 @@ import { withConfig } from './support/config';
  */
 
 async function getKitchenOrders(headers: Record<string, string> = {}) {
-  const app = await buildApp();
+  const app = await createTestApp();
   try {
     return await app.inject({
       method: 'GET',
@@ -39,12 +39,40 @@ describe('kitchen auth', () => {
     });
   });
 
-  it('still refuses when the opt-out is set to something other than 1', async () => {
-    // `kitchenAuthDisabled` is `=== '1'` at config load; this pins the boolean
-    // rather than the parse, so a future truthiness bug here goes red.
-    await withConfig({ kitchenToken: '', kitchenAuthDisabled: false }, async () => {
-      expect((await getKitchenOrders()).statusCode).toBe(401);
+  describe('the opt-out is parsed as exactly "1"', () => {
+    // `config` reads the environment ONCE at module evaluation, so the parse
+    // cannot be reached through the shared instance — a fresh copy of the
+    // module is imported for each value. `withConfig` patches the boolean; only
+    // this pins the string that produces it, so a truthiness regression
+    // (`Boolean(env(...))`, `=== 'true'`) goes red here and nowhere else.
+    const saved = process.env.KITCHEN_AUTH_DISABLED;
+
+    afterEach(() => {
+      if (saved === undefined) delete process.env.KITCHEN_AUTH_DISABLED;
+      else process.env.KITCHEN_AUTH_DISABLED = saved;
+      vi.resetModules();
     });
+
+    async function parsedOptOut(value: string | undefined): Promise<boolean> {
+      if (value === undefined) delete process.env.KITCHEN_AUTH_DISABLED;
+      else process.env.KITCHEN_AUTH_DISABLED = value;
+      vi.resetModules();
+      const fresh = await import('../src/config.js');
+      return fresh.config.kitchenAuthDisabled;
+    }
+
+    it('"1" disables the guard', async () => {
+      expect(await parsedOptOut('1')).toBe(true);
+      // `env()` trims, so whitespace around the 1 is still the 1.
+      expect(await parsedOptOut(' 1 ')).toBe(true);
+    });
+
+    it.each([undefined, '', '0', 'true', 'yes', 'on', 'disabled', '11'])(
+      'anything else (%j) leaves it armed',
+      async (value) => {
+        expect(await parsedOptOut(value)).toBe(false);
+      },
+    );
   });
 
   it('allows the explicit local-dev opt-out', async () => {

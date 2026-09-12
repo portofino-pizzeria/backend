@@ -37,7 +37,7 @@ Internal: `GET /api/health`, hosted checkout pages under `/checkout/*`, and
 
 ## Local development
 
-Prereqs: **Node ≥ 20** and **Docker** (for local Postgres).
+Prereqs: **Node ≥ 20.6** (`--env-file`) and **Docker** (for local Postgres).
 
 ```bash
 npm install
@@ -47,6 +47,11 @@ npm run db:up                 # start Postgres (docker compose)
 npm run db:generate           # generate the initial SQL migration from schema
 npm run dev                   # loads .env, migrates + seeds + serves on :4000
 ```
+
+`npm run dev`, `db:migrate` and `db:seed` all read `.env` and **refuse to start
+without one** (`node: .env: not found`) — that is the `cp` above, not a broken
+install. `npm start` never reads it; a deployed service is configured by its
+platform.
 
 Then start the app in `../mobile` (`npm run web`) — it auto-targets
 `http://localhost:4000`.
@@ -97,9 +102,9 @@ zero, on every run — there is no separate migration step, deliberately.
 Built for a container runtime (AWS App Runner) + managed Postgres (Aurora
 Serverless v2), provisioned by the Terraform in `../infra`. `npm run build`
 emits `dist/`; `npm start` runs it. Set the env vars from `.env.example` in the
-service configuration (`npm start` does not read `.env`; only `npm run dev`
-does). `KITCHEN_TOKEN` and `OWNER_MENU_TOKEN` are the two that are not
-optional there — both guards fail closed.
+service configuration (`npm start` does not read `.env`; only the local
+`dev` / `db:*` scripts do). `KITCHEN_TOKEN` and `OWNER_MENU_TOKEN` are the two
+that are not optional there — both guards fail closed.
 
 `.github/workflows/deploy.yml` ships it: on a push to `master` (or a
 `workflow_dispatch` naming an older `sha`, which is how you roll back — a
