@@ -250,6 +250,8 @@ jobs:
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'portofino-production-backend' }}
       SERVICE_ARN: ${{ vars.APPRUNNER_SERVICE_ARN }}
       TARGET_SHA: ${{ needs.resolve.outputs.sha }}
+      DB_CLUSTER_IDENTIFIER: ${{ vars.DB_CLUSTER_IDENTIFIER }}
+      DB_SNAPSHOT_PREFIX: ${{ vars.DB_SNAPSHOT_PREFIX }}
 
     steps:
       - name: Verify the environment gate
@@ -333,6 +335,17 @@ jobs:
           fi
           if [ -z "${SERVICE_ARN}" ]; then
             echo "::error::Repository variable APPRUNNER_SERVICE_ARN is not set."
+            missing=1
+          fi
+          # Required, not optional: without them the pre-migration snapshot
+          # cannot be taken, and a deploy that may migrate production with no
+          # restore point is exactly what that step exists to refuse.
+          if [ -z "${DB_CLUSTER_IDENTIFIER}" ]; then
+            echo "::error::Repository variable DB_CLUSTER_IDENTIFIER is not set (infra output db_cluster_identifier)."
+            missing=1
+          fi
+          if [ -z "${DB_SNAPSHOT_PREFIX}" ]; then
+            echo "::error::Repository variable DB_SNAPSHOT_PREFIX is not set (infra output db_pre_deploy_snapshot_prefix)."
             missing=1
           fi
           [ "${missing}" -eq 0 ] || exit 1
@@ -446,6 +459,82 @@ jobs:
             -t "${REPO}:${TARGET_SHA}" \
             -t "${REPO}:latest" \
             .
+
+      # ---------------------------------------------------------------------
+      # A restore point for the DATABASE, before anything that could migrate it.
+      #
+      # drizzle/ migrations run on container boot, so this deploy can apply an
+      # irreversible schema change to production Aurora the moment App Runner
+      # starts the new image. PITR is a rolling window; a named snapshot taken
+      # here is an unambiguous point to restore to, and it never ages out.
+      #
+      # Taken only when a migration COULD run: the live commit is unknown, or
+      # drizzle/ differs between the live commit and this one (either direction,
+      # so a rollback across a migration is covered too). Anything this step
+      # cannot establish resolves to "take the snapshot" - a skipped snapshot
+      # before a migration is the failure, an extra one is only storage.
+      #
+      # It sits BEFORE the App Runner operations snapshot below on purpose: that
+      # one must stay immediately before the push, and waiting for a database
+      # snapshot to become available takes minutes.
+      # ---------------------------------------------------------------------
+      - name: Snapshot the database if this deploy could migrate it
+        run: |
+          set -euo pipefail
+
+          service_url="$(aws apprunner describe-service --service-arn "${SERVICE_ARN}" \
+            --query 'Service.ServiceUrl' --output text 2>/dev/null || true)"
+          live_commit=""
+          if [ -n "${service_url}" ] && [ "${service_url}" != "None" ]; then
+            live_commit="$(curl -fsS --max-time 20 "https://${service_url}/api/health" 2>/dev/null \
+              | jq -r '.commit // empty' 2>/dev/null || true)"
+          fi
+          echo "live commit:   ${live_commit:-<unknown>}"
+          echo "target commit: ${TARGET_SHA}"
+
+          reason=""
+          if ! printf '%s' "${live_commit}" | grep -qE '^[0-9a-f]{40}$'; then
+            reason="the live commit is unknown (${live_commit:-absent}), so pending migrations cannot be ruled out"
+          elif ! git fetch --quiet --no-tags --depth=1 origin "${live_commit}" 2>/dev/null; then
+            reason="the live commit ${live_commit} could not be fetched to compare migrations"
+          elif ! changed="$(git diff --name-only "${live_commit}" "${TARGET_SHA}" -- drizzle/)"; then
+            reason="the migration diff between ${live_commit} and ${TARGET_SHA} could not be computed"
+          elif [ -n "${changed}" ]; then
+            reason="drizzle/ differs between the live commit and this one: $(echo "${changed}" | tr '\n' ' ')"
+          fi
+
+          if [ -z "${reason}" ]; then
+            echo "No migration can run on this deploy (drizzle/ is identical to the live commit), so no snapshot is needed."
+            exit 0
+          fi
+          echo "Taking a snapshot because ${reason}"
+
+          # Letters, digits and single hyphens, starting with a letter. The
+          # prefix is the ONLY name the CI role may create a snapshot under.
+          id="${DB_SNAPSHOT_PREFIX}${TARGET_SHA:0:12}-$(date -u +%Y%m%d%H%M%S)"
+          aws rds create-db-cluster-snapshot \
+            --db-cluster-identifier "${DB_CLUSTER_IDENTIFIER}" \
+            --db-cluster-snapshot-identifier "${id}" \
+            --tags "Key=purpose,Value=pre-deploy" "Key=target-commit,Value=${TARGET_SHA}" \
+                   "Key=live-commit,Value=${live_commit:-unknown}" "Key=run,Value=${GITHUB_RUN_ID}" \
+            --query 'DBClusterSnapshot.DBClusterSnapshotIdentifier' --output text
+
+          # Wait for AVAILABLE, not for the create call to return: a snapshot
+          # still creating when a migration starts is not yet a restore point.
+          aws rds wait db-cluster-snapshot-available --db-cluster-snapshot-identifier "${id}"
+          status="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${id}" \
+            --query 'DBClusterSnapshots[0].Status' --output text)"
+          if [ "${status}" != "available" ]; then
+            echo "::error::Snapshot ${id} is ${status}, not available - refusing to deploy a possible migration without a restore point."
+            exit 1
+          fi
+          echo "Restore point ready: ${id}"
+          {
+            echo "### Pre-deploy database snapshot"
+            echo "${id}"
+            echo ""
+            echo "Reason: ${reason}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       # ---------------------------------------------------------------------
       # Snapshot IMMEDIATELY BEFORE the push, not before the build. This is the
