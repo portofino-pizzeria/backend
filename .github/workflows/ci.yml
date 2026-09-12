@@ -15,8 +15,8 @@ on:
   # `deploy.yml` also calls this workflow on every master push, so a master push
   # runs it twice. That duplication is deliberate: it keeps a CI status on master
   # that is attributable to this workflow alone, and so survives the deploy
-  # workflow being disabled, held at its environment gate, or failing before the
-  # gate for a reason unrelated to the code.
+  # workflow being disabled, or failing before its tests for a reason unrelated
+  # to the code.
   push:
     branches: [master]
   pull_request:

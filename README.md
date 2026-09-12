@@ -157,39 +157,41 @@ the same "invisible" defect as a stale site, just moved.
 Nothing above is hardcoded in the workflow: both ARNs embed the AWS account id,
 and a workflow copy of an infrastructure value is a silent drift channel.
 
-### The human in the loop
+### No human in the loop
 
 Migrations run on **container boot** from `drizzle/` (`src/index.ts`), so a
-backend deploy applies schema changes to production Aurora with no way back
-once data is written under the new schema. The deploy job therefore runs
-through the `production-backend` GitHub Environment with a **required
-reviewer** — automatic to the door, human through it. Its first step verifies
-that protection actually exists and fails closed if it does not, or if it
-cannot tell.
+backend deploy can apply schema changes to production Aurora. Until
+2026-09-12 the deploy job ran through the `production-backend` GitHub
+Environment with a required reviewer. The operator removed that gate: a deploy
+waiting on a human left `master` red, and a red `master` blocks the merge
+train — including the PRs that fix the deploy. Every master push now deploys
+with no approval.
 
-The reviewer is read on every run, never assumed. When the workflow first
-shipped there was none — required reviewers on a *private* repository in a
-Free organisation answered `422 "Please ensure the billing plan supports the
-required reviewers protection rule"` — and every deploy stopped at that first
-step, which was the right outcome. One has since been added; if it is ever
-removed, deploys stop again. To see the current state rather than trust this
-paragraph:
+What still stands between a change and the database:
 
-```bash
-gh api repos/portofino-pizzeria/backend/environments/production-backend \
-  --jq '[.protection_rules[].type]'     # must contain "required_reviewers"
-```
+- only commits already on `master` deploy (the `resolve` job refuses anything
+  else). Note `master` itself has **no branch protection**: a writer's direct
+  push deploys too, so the next point — not review — is the check that always
+  runs;
+- the full test suite runs at the target commit before the deploy job;
+- a named Aurora cluster snapshot (`$DB_SNAPSHOT_PREFIX<sha>-<time>`) is taken
+  **before** the push whenever a migration could run — the live commit is
+  unknown, or `drizzle/` differs between it and the target — and the deploy
+  refuses to continue until it is `available`. That snapshot is the restore
+  point; the CI role can create snapshots and never delete one.
 
-The rule became configurable because the repository was made **public** on
-2026-09-11 — required reviewers are available on Free for public repositories
-and not for private ones. Whether GitHub keeps listing an unenforced rule after
-a flip back to private is not knowable from the rules read, so the gate step
-also reads the repository's visibility and refuses to deploy while it is
-private. What public costs: `ci.yml` runs for pull requests from forks, with a
+The deploy job still runs through the `production-backend` GitHub Environment —
+with no reviewer — for two reasons. Its deployment-branch policy admits `master`
+only. And the CI role's trust policy (portofino-pizzeria/infra `github-oidc.tf`)
+pins the environment-form claim, in GitHub's immutable form
+(`repo:portofino-pizzeria@294832717/backend@1355617007:environment:production-backend`),
+so only a job that names the environment can assume the role. Removing
+`environment:` changes that claim and locks deploys out until the trust policy
+changes with it.
+
+The repository is **public**. `ci.yml` runs for pull requests from forks with a
 read-only token and no secrets; the deploy workflow is `push` /
-`workflow_dispatch` only, so it never runs for a fork, and the CI role's trust
-policy is pinned to the `production-backend` environment subject, which only a
-job that passed the gate can present.
+`workflow_dispatch` only, so it never runs for a fork.
 
 ### Rolling back
 
@@ -207,9 +209,11 @@ commit, which it does for anything this pipeline deployed before:
 | no (predates the pipeline), or `rebuild` ticked | builds it from source, pushes `:<sha>` then `:latest` |
 
 Either way CI runs at that commit first — so a commit whose dependencies or
-tests no longer pass is refused at the gate, retag or not — the deploy waits
-at the same reviewer gate, and the same verification proves `/api/health`
-reports that exact `commit` before the run goes green. The retag needs
+tests no longer pass is refused there, retag or not — a pre-deploy database
+snapshot is taken when `drizzle/` differs from the live commit (a rollback
+across a migration is not a rollback; the snapshot is the way back), and the
+same verification proves `/api/health` reports that exact `commit` before the
+run goes green. No one approves a rollback; dispatching it is the decision. The retag needs
 `ecr:BatchGetImage` on the CI role, which `../infra/github-oidc.tf` grants
 for precisely this.
 
