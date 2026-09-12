@@ -157,8 +157,10 @@ Enterprise plan, `portofino-pizzeria` is on Free, and the API answered `422
 rule"` — so the first three `master` pushes stopped at the gate, correctly. The
 repository was made **public**, where the rule is available on Free, and
 `production-backend` now carries it alongside its `master`-only branch policy.
-Making the repository private again re-creates that 422 the next time the rule
-is edited; the gate step is what would catch it.
+Making the repository private again puts the rule back on a plan that does not
+support it, and whether GitHub keeps listing an unenforced rule is not knowable
+from the rules read — so the gate step also reads the repository's visibility
+and refuses to deploy while it is private.
 
 What public costs here: `ci.yml` runs for pull requests from forks, with a
 read-only token and no secrets. The deploy workflow is `push` /

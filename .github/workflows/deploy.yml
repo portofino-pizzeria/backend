@@ -1,4 +1,6 @@
 # Backend deploy — build, push to ECR, and PROVE the pushed artifact is live.
+# (Or, on a `retag` dispatch: move :latest onto an image already in ECR, and
+# prove THAT is live — same gate, same verification, no build.)
 #
 # ---------------------------------------------------------------------------
 # Why the verification below is shaped the way it is
@@ -42,8 +44,10 @@
 # 2026-09-11 the repository was made PUBLIC — required reviewers are available
 # on Free for public repositories — and `production-backend` now carries a
 # `required_reviewers` rule on top of its `master`-only branch policy. Making
-# the repository private again silently re-creates the 422 on the next edit of
-# that rule, and the gate step below is what would catch it.
+# the repository private again puts the rule back on a plan that does not
+# support it, and whether GitHub then keeps LISTING an unenforced rule is not
+# something this workflow can tell from the rules read alone — so the gate
+# step below also reads the repository's visibility and refuses on private.
 #
 # What "public" costs, and why it is safe here: `ci.yml` now runs for pull
 # requests from forks, with a read-only GITHUB_TOKEN and no secrets. THIS
@@ -62,6 +66,9 @@
 #   APPRUNNER_SERVICE_ARN  (required)  arn:aws:apprunner:<region>:<acct>:service/portofino-production-api/<id>
 #   AWS_REGION             (optional)  defaults to eu-central-1
 #   ECR_REPOSITORY         (optional)  defaults to portofino-production-backend
+#   PUBLIC_API_URL         (optional)  https://api.<domain>; when set, a verified
+#                                      deploy also checks the custom domain —
+#                                      non-gating, see the last step
 #
 # `APPRUNNER_SERVICE_ARN` is a variable rather than something looked up by
 # name because the `portofino-ci-backend` role is granted `DescribeService` and
@@ -275,6 +282,26 @@ jobs:
           fi
 
           echo "Protection rules on '${ENVIRONMENT_NAME}': ${rules:-<none>}"
+
+          # A listed rule is only evidence on a plan that enforces it. Required
+          # reviewers on a PRIVATE repository need Team/Enterprise, and this
+          # organisation is on Free — so on a private repository the rule above
+          # is either impossible to have configured or of unverifiable effect.
+          # Either way that is UNKNOWN, and UNKNOWN does not deploy migrations.
+          if ! private="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.private' 2>&1)"; then
+            echo "::error::Cannot read this repository's visibility: ${private}"
+            echo "::error::That is UNKNOWN, not 'public'. Refusing to deploy."
+            exit 1
+          fi
+          if [ "${private}" != "false" ]; then
+            echo "::error::This repository is PRIVATE (or its visibility read as '${private}')."
+            echo "::error::Required reviewers on a private repository need a GitHub Team/Enterprise"
+            echo "::error::plan; portofino-pizzeria is on Free, and the gate was configured by making"
+            echo "::error::the repository public on 2026-09-11 (see the header). Make it public again,"
+            echo "::error::or upgrade the plan and remove this visibility check."
+            exit 1
+          fi
+
           case ",${rules}," in
             *,required_reviewers,*) ;;
             *)
@@ -284,11 +311,8 @@ jobs:
               echo "::error::change. Add a required reviewer under Settings -> Environments ->"
               echo "::error::${ENVIRONMENT_NAME}."
               echo "::error::"
-              echo "::error::If this repository is PRIVATE: required reviewers there need a GitHub"
-              echo "::error::Team/Enterprise plan, and portofino-pizzeria is on Free — the API answers"
-              echo "::error::422 'Please ensure the billing plan supports the required reviewers"
-              echo "::error::protection rule'. Either upgrade the plan or keep the repository public,"
-              echo "::error::which is how this rule was configured on 2026-09-11 (see the header)."
+              echo "::error::The repository is public, so the rule is available on this plan:"
+              echo "::error::it has been removed, not blocked. Add it back before deploying."
               exit 1
               ;;
           esac
@@ -426,9 +450,32 @@ jobs:
             case "${out}" in
               *ImageAlreadyExistsException*)
                 echo ":latest already points at ${TARGET_SHA}; nothing to retag."
+                # "Already :latest" is only "already live" if the last deploy
+                # of that tag succeeded. If the service is running something
+                # else, no tag move means no operation will fire, and the wait
+                # below would run out its 15 minutes blaming auto-deploy for
+                # what is actually a tag that never got applied. Read the live
+                # commit NOW and say what the operator has to do, because the
+                # CI role holds no apprunner:StartDeployment to do it here.
+                host="$(aws apprunner describe-service --service-arn "${SERVICE_ARN}" \
+                          --query 'Service.ServiceUrl' --output text)"
+                live="$(curl -fsS --max-time 15 "https://${host}/api/health" 2>/dev/null \
+                          | jq -r '.commit // ""' 2>/dev/null || true)"
+                if [ "${live}" != "${TARGET_SHA}" ]; then
+                  echo "::error:::latest already names ${TARGET_SHA}, but the service reports"
+                  echo "::error::commit '${live:-<unreachable>}'. The tag is right and the running"
+                  echo "::error::revision is not — App Runner never applied it, or applied it and"
+                  echo "::error::rolled back. Nothing this run can push will make it try again."
+                  echo "::error::Start the deployment by hand with a credential that holds"
+                  echo "::error::apprunner:StartDeployment:"
+                  echo "::error::  aws apprunner start-deployment --service-arn ${SERVICE_ARN}"
+                  echo "::error::then watch it in the console; the CI role deliberately cannot."
+                  exit 1
+                fi
                 ;;
               *)
-                echo "::error::aws ecr put-image failed: ${out}"
+                echo "::error::aws ecr put-image failed; the AWS error follows."
+                printf '%s\n' "${out}"
                 exit 1
                 ;;
             esac
@@ -631,6 +678,9 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Check the custom domain serves the same commit (non-gating)
         if: ${{ vars.PUBLIC_API_URL != '' }}
+        # Belt to the script's braces: an unforeseen non-zero here must not
+        # turn a DNS check into a red deploy.
+        continue-on-error: true
         env:
           PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
         run: |
