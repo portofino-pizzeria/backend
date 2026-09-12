@@ -43,7 +43,9 @@
 # ---------------------------------------------------------------------------
 # Rollback: retag when the image already exists, rebuild only when it does not
 # ---------------------------------------------------------------------------
-# Every deploy pushes an immutable `:<sha>` tag beside `:latest`. A
+# Every deploy pushes a `:<sha>` tag beside `:latest` — one that nothing
+# re-points except an explicit `rebuild: true` dispatch (the repository's tags
+# are MUTABLE; the workflow, not ECR, is what keeps it still). A
 # `workflow_dispatch` naming an older sha therefore usually names an image that
 # is ALREADY in ECR, built at that commit with COMMIT_SHA baked in. For that
 # case the deploy RETAGS it (`ecr:BatchGetImage` the `:<sha>` manifest,
@@ -281,8 +283,8 @@ jobs:
               echo "::error::container boot, so an unattended deploy applies an irreversible schema"
               echo "::error::change. Add a required reviewer under Settings -> Environments ->"
               echo "::error::${ENVIRONMENT_NAME}. One was configured on 2026-09-11; if it is gone,"
-              echo "::error::it was removed. Check with: gh api repos/${GITHUB_REPOSITORY}/environments/"
-              echo "::error::${ENVIRONMENT_NAME} --jq '[.protection_rules[].type]'"
+              echo "::error::it was removed. Check with:"
+              echo "::error::gh api repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT_NAME} --jq '[.protection_rules[].type]'"
               exit 1
               ;;
           esac
@@ -437,8 +439,10 @@ jobs:
         run: |
           set -euo pipefail
           # Order matters. Pushing `:latest` is what App Runner watches, so the
-          # immutable `:<sha>` tag goes first — a rollback target must exist
-          # even if the deployment that follows fails.
+          # `:<sha>` tag goes first — a rollback target must exist even if the
+          # deployment that follows fails. (On a `rebuild: true` dispatch this
+          # re-points an existing `:<sha>` at the fresh digest; the previous
+          # manifest for that commit is then untagged.)
           docker push "${REPO}:${TARGET_SHA}"
           docker push "${REPO}:latest"
 
@@ -471,8 +475,18 @@ jobs:
               echo "(The verify step will confirm the same thing through its no-op arm.)"
               exit 0
             fi
-            echo "::error:::latest already names the ${TARGET_SHA} image, but /api/health reports"
-            echo "::error::commit '${current}'. An unchanged tag starts no App Runner"
+            if [ "${current}" = "<unreachable>" ]; then
+              # UNKNOWN, not "not serving": the host may be mid-incident, and
+              # pushing a fresh digest at it now would add a deployment to
+              # whatever is already wrong.
+              echo "::error::The :latest tag already names the ${TARGET_SHA} image, and"
+              echo "::error::https://${host}/api/health did not answer. Whether the service is"
+              echo "::error::serving it is UNKNOWN. Check the App Runner console before"
+              echo "::error::dispatching anything else."
+              exit 1
+            fi
+            echo "::error::The :latest tag already names the ${TARGET_SHA} image, but /api/health"
+            echo "::error::reports commit '${current}'. An unchanged tag starts no App Runner"
             echo "::error::deployment, so retagging cannot fix this. Re-run this workflow with"
             echo "::error::rebuild: true to push a fresh digest for the same commit, or start a"
             echo "::error::deployment from the App Runner console."
