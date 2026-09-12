@@ -104,6 +104,12 @@
 #   PUBLIC_API_URL         (optional)  https://api.<domain>; when set, a verified
 #                                      deploy also checks the custom domain —
 #                                      non-gating, see the last step
+#   DB_CLUSTER_IDENTIFIER  (required)  portofino-production-db
+#   DB_SNAPSHOT_PREFIX     (required)  portofino-production-db-pre-deploy-
+#                                      — from the infra outputs
+#                                      db_cluster_identifier and
+#                                      db_pre_deploy_snapshot_prefix; the CI role
+#                                      may create snapshots ONLY under that prefix
 #
 # `APPRUNNER_SERVICE_ARN` is a variable rather than something looked up by
 # name because the `portofino-ci-backend` role is granted `DescribeService` and
@@ -230,7 +236,17 @@ jobs:
     name: Build, push, verify
     needs: [resolve, test]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 90, budgeted rather than guessed: up to ~38 minutes before the push (gate,
+    # build, and the DB snapshot, whose `aws rds wait` gives up after 30) plus up
+    # to ~46 after it (push, ~17 minutes for a deployment to start, ~22 for it
+    # to finish, the health and guard reads). The OIDC session is the other
+    # ceiling — the CI role sets no max_session_duration, so one session lasts
+    # an hour — which is why the credentials are assumed AGAIN just before the
+    # push instead of this number being raised on a single session.
+    timeout-minutes: 90
+    outputs:
+      # For the alert job: the restore point matters most on a FAILED deploy.
+      db_snapshot: ${{ steps.dbsnap.outputs.id }}
 
     # The only job that exchanges an OIDC token for AWS credentials.
     permissions:
@@ -409,6 +425,7 @@ jobs:
       # snapshot to become available takes minutes.
       # ---------------------------------------------------------------------
       - name: Snapshot the database if this deploy could migrate it
+        id: dbsnap
         run: |
           set -euo pipefail
 
@@ -459,12 +476,27 @@ jobs:
             exit 1
           fi
           echo "Restore point ready: ${id}"
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
           {
             echo "### Pre-deploy database snapshot"
             echo "${id}"
             echo ""
             echo "Reason: ${reason}"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      # A fresh one-hour OIDC session for everything from the push onward. The
+      # first session has been running since before the build and the DB
+      # snapshot (whose wait alone can take 30 minutes), and the verification
+      # after the push can take ~45 by itself; on a slow day one session does
+      # not cover both, and an ExpiredToken mid-verify would report a
+      # deployment that is really in flight as UNKNOWN. (The ECR login above is
+      # unaffected — its token is valid for 12 hours.)
+      - name: Re-assume the CI role for the push and verification
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-backend-${{ github.run_id }}-push
 
       # ---------------------------------------------------------------------
       # Snapshot IMMEDIATELY BEFORE the push, not before the build. This is the
@@ -890,7 +922,7 @@ jobs:
   # alerting on are exactly the ones a step inside `deploy` cannot see: `resolve`
   # or `test` failing (so `deploy` never runs), and `deploy` being CANCELLED —
   # which is what `timeout-minutes` produces, and `failure()` is false for a
-  # cancellation. A 45-minute timeout is precisely "a deploy is in flight and
+  # cancellation. A 90-minute timeout is precisely "a deploy is in flight and
   # nobody is watching".
   # ---------------------------------------------------------------------------
   alert:
@@ -915,6 +947,8 @@ jobs:
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           TEST_RESULT: ${{ needs.test.result }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DB_SNAPSHOT: ${{ needs.deploy.outputs.db_snapshot }}
+          DB_SNAPSHOT_PREFIX: ${{ vars.DB_SNAPSHOT_PREFIX }}
         run: |
           set -euo pipefail
 
@@ -929,13 +963,29 @@ jobs:
             detail="resolve=${RESOLVE_RESULT} test=${TEST_RESULT} deploy=${DEPLOY_RESULT}. Read the 'Wait for the deployment' step before assuming the live service is unchanged."
           fi
 
-          text="${headline} for ${TARGET_SHA:-<unresolved>} — ${RUN_URL}"
+          # The restore point, where one exists. An EMPTY output proves nothing
+          # on its own: the snapshot step skips when drizzle/ is unchanged from
+          # the live commit, a job that stopped before that step reports none,
+          # and a cancelled job (or a lost runner) may lose its outputs. So an
+          # empty value points at where to look rather than concluding.
+          pattern="${DB_SNAPSHOT_PREFIX:-}${TARGET_SHA:0:12}-*"
+          if [ -n "${DB_SNAPSHOT:-}" ]; then
+            restore="Database restore point, taken before the push: ${DB_SNAPSHOT}."
+          elif [ "${DEPLOY_RESULT}" = "cancelled" ] || [ "${DEPLOY_RESULT}" = "failure" ]; then
+            restore="No restore point was reported by the job. That is expected when drizzle/ was unchanged, and also what a job that stopped early, was cancelled, or lost its runner looks like — read the 'Snapshot the database' step's log, or look in RDS for ${pattern}, before assuming either way."
+          else
+            restore="The deploy job did not run, so nothing was pushed."
+          fi
+
+          text="${headline} for ${TARGET_SHA:-<unresolved>} — ${RUN_URL} — ${restore}"
           {
             echo "### :x: ${headline}"
             echo ""
             echo "Commit \`${TARGET_SHA:-<unresolved>}\`."
             echo ""
             echo "${detail}"
+            echo ""
+            echo "${restore}"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ -n "${WEBHOOK:-}" ]; then
