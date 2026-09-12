@@ -14,7 +14,7 @@ Customer (consumed by the mobile app — contract mirrors `../mobile/src/lib`):
 | Method | Path | Purpose |
 |---|---|---|
 | `GET`  | `/api/menu` | Menu → `{ items }` |
-| `POST` | `/api/orders` | Create order → `{ order }` |
+| `POST` | `/api/orders` | Create order → `{ order }`. `customer.name`, `customer.phone` (≥ 6 digits) and `customer.address` are **required** — every order is a delivery. Refusals are `400` with a German message the checkout shows verbatim |
 | `GET`  | `/api/orders/:id` | Order (status polling) → `{ order }` |
 | `GET`  | `/api/payments/providers` | `{ stripe, paypal, mockFallback }` |
 | `POST` | `/api/payments/checkout` | Start hosted checkout → `{ url, provider }` |
