@@ -547,14 +547,14 @@ jobs:
           # apart here: the body could not be read at all (an error — step 3
           # just read it), the field is present (asserted), and the field is
           # absent. Absent is decided by the SOURCE this job has checked out at
-          # TARGET_SHA: if src/app.ts serves the field and the service does
+          # TARGET_SHA: if the source serves the field and the service does
           # not, that is an error; if the source predates the field (a
           # rollback dispatch naming an older sha) it is a notice, so the
           # rollback path stays open. Sets `kitchen` for the summary.
           kitchen=""
           assert_kitchen_guard() {
             local body="" i
-            for i in $(seq 1 20); do          # the same ~2 minutes step 3 allows
+            for i in $(seq 1 20); do          # the same budget step 3 allows
               body="$(curl -fsS --max-time 15 "${health_url}" 2>/dev/null || true)"
               if [ "$(printf '%s' "${body}" | jq -r '.commit // ""' 2>/dev/null || true)" = "${TARGET_SHA}" ]; then
                 break
@@ -570,14 +570,14 @@ jobs:
             fi
 
             if [ "$(printf '%s' "${body}" | jq -r 'has("kitchen")')" != "true" ]; then
-              if grep -q 'kitchen: kitchenAuthMode()' src/app.ts; then
+              if grep -rq 'kitchenAuthMode()' src/; then
                 echo "::error::${health_url} reports commit ${TARGET_SHA} with no 'kitchen' field, but"
-                echo "::error::src/app.ts at that commit serves one. The build serving traffic is not"
+                echo "::error::the source at that commit serves one. The build serving traffic is not"
                 echo "::error::the build this source describes."
                 exit 1
               fi
               kitchen=""
-              echo "::notice::${health_url} reports no 'kitchen' field, and src/app.ts at ${TARGET_SHA} does"
+              echo "::notice::${health_url} reports no 'kitchen' field, and the source at ${TARGET_SHA} does"
               echo "::notice::not serve one — this build predates the guard report (a rollback), so the"
               echo "::notice::guard's posture was not checked."
               return 0
