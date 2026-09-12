@@ -29,21 +29,28 @@
 # fails closed if that protection is missing, because an Environment that does
 # not exist is created silently and unprotected on first use.
 #
-# >> AS SHIPPED, THAT REVIEWER DOES NOT EXIST YET AND THIS WORKFLOW THEREFORE
-# >> REFUSES TO DEPLOY. The `production-backend` environment has been created
-# >> and restricted to the `master` branch, but `portofino-pizzeria` is a FREE
-# >> organisation and required reviewers on a PRIVATE repository need Team or
-# >> Enterprise:
-# >>
-# >>   PUT .../environments/production-backend  {"reviewers":[...]}
-# >>   422 "Failed to create the environment protection rule. Please ensure the
-# >>        billing plan supports the required reviewers protection rule."
-# >>
-# >> Upgrade the org plan (or make the repo public, which is not an option
-# >> here), then add a required reviewer under Settings -> Environments ->
-# >> production-backend. Until then every deploy stops at the first step, which
-# >> is the correct behaviour: no reviewer means an unattended migration
-# >> against production Aurora.
+# History of that gate, because the constraint it ran into is easy to walk
+# back into. When this workflow first shipped the reviewer could not be
+# configured: `portofino-pizzeria` is a FREE organisation, required reviewers
+# on a PRIVATE repository need Team or Enterprise, and the API answered
+#
+#   PUT .../environments/production-backend  {"reviewers":[...]}
+#   422 "Failed to create the environment protection rule. Please ensure the
+#        billing plan supports the required reviewers protection rule."
+#
+# so the first three master pushes stopped at the gate, correctly. On
+# 2026-09-11 the repository was made PUBLIC — required reviewers are available
+# on Free for public repositories — and `production-backend` now carries a
+# `required_reviewers` rule on top of its `master`-only branch policy. Making
+# the repository private again silently re-creates the 422 on the next edit of
+# that rule, and the gate step below is what would catch it.
+#
+# What "public" costs, and why it is safe here: `ci.yml` now runs for pull
+# requests from forks, with a read-only GITHUB_TOKEN and no secrets. THIS
+# workflow is `push`/`workflow_dispatch` only, so it never runs for a fork; and
+# the `portofino-ci-backend` trust policy is pinned to the ENVIRONMENT subject
+# (`repo:portofino-pizzeria/backend:environment:production-backend`,
+# `infra/github-oidc.tf`), which only a job that passed this gate can present.
 #
 # ---------------------------------------------------------------------------
 # Configuration (repository Settings -> Secrets and variables -> Actions ->
@@ -76,6 +83,17 @@ on:
           replays the same commit, so a re-run is not a rollback.
         required: false
         type: string
+      retag:
+        description: >-
+          Roll back by RETAGGING the image already in ECR at :<sha> to :latest,
+          instead of rebuilding it from source. Needs `sha`. Skips CI — the
+          point of this path is that it still works when the tree at that
+          commit no longer builds, which is exactly when a rollback is needed
+          most. The environment gate and the live-commit verification still
+          apply.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -116,8 +134,16 @@ jobs:
           # is attacker-shaped text even on a private repo.
           REQUESTED_SHA: ${{ inputs.sha }}
           DEFAULT_SHA: ${{ github.sha }}
+          RETAG: ${{ inputs.retag }}
         run: |
           set -euo pipefail
+          if [ "${RETAG}" = "true" ] && [ -z "${REQUESTED_SHA}" ]; then
+            # Retagging the tip of master to :latest is what the last deploy
+            # already did; the only reason to take this path is to name an
+            # OLDER commit, so an empty `sha` here is a mistake, not a default.
+            echo "::error::'retag' needs 'sha': name the known-good commit to roll back to."
+            exit 1
+          fi
           if [ -z "${REQUESTED_SHA}" ]; then
             sha="${DEFAULT_SHA}"
           else
@@ -165,6 +191,10 @@ jobs:
   test:
     name: CI
     needs: resolve
+    # A retag ships an image that was built — and so tested — by an earlier
+    # run of this workflow; rebuilding or retesting the tree is not what it is
+    # for. See the `retag` input.
+    if: ${{ !inputs.retag }}
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.resolve.outputs.sha }}
@@ -172,6 +202,14 @@ jobs:
   deploy:
     name: Build, push, verify
     needs: [resolve, test]
+    # `test` is skipped on a retag, and a skipped `needs` would skip this job
+    # too without the status function. `!cancelled()` rather than `always()`:
+    # a cancelled run must not start a deployment. Every other outcome of
+    # `test` (failure, or skipped because `resolve` failed) keeps the gate.
+    if: >-
+      !cancelled() &&
+      needs.resolve.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -199,6 +237,9 @@ jobs:
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'portofino-production-backend' }}
       SERVICE_ARN: ${{ vars.APPRUNNER_SERVICE_ARN }}
       TARGET_SHA: ${{ needs.resolve.outputs.sha }}
+      # "true" on a retag rollback, "" or "false" otherwise (a push event has
+      # no inputs at all).
+      RETAG: ${{ inputs.retag }}
 
     steps:
       - name: Verify the environment gate
@@ -243,10 +284,11 @@ jobs:
               echo "::error::change. Add a required reviewer under Settings -> Environments ->"
               echo "::error::${ENVIRONMENT_NAME}."
               echo "::error::"
-              echo "::error::Known blocker: required reviewers on a PRIVATE repository need a"
-              echo "::error::GitHub Team/Enterprise plan, and portofino-pizzeria is on Free. The"
-              echo "::error::API returns 422 'Please ensure the billing plan supports the required"
-              echo "::error::reviewers protection rule'. Upgrade the plan, then add the reviewer."
+              echo "::error::If this repository is PRIVATE: required reviewers there need a GitHub"
+              echo "::error::Team/Enterprise plan, and portofino-pizzeria is on Free — the API answers"
+              echo "::error::422 'Please ensure the billing plan supports the required reviewers"
+              echo "::error::protection rule'. Either upgrade the plan or keep the repository public,"
+              echo "::error::which is how this rule was configured on 2026-09-11 (see the header)."
               exit 1
               ;;
           esac
@@ -267,10 +309,6 @@ jobs:
           fi
           [ "${missing}" -eq 0 ] || exit 1
 
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve.outputs.sha }}
-
       - name: Assume the CI role (GitHub OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -278,11 +316,22 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-backend-${{ github.run_id }}
 
+      # ---------------------------------------------------------------------
+      # Build path (push to master, or a rebuild rollback). A retag rollback
+      # skips all three of these: it ships bytes that are already in ECR.
+      # ---------------------------------------------------------------------
+      - uses: actions/checkout@v4
+        if: ${{ !inputs.retag }}
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
       - name: Log in to ECR
+        if: ${{ !inputs.retag }}
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build the image
+        if: ${{ !inputs.retag }}
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
@@ -318,6 +367,7 @@ jobs:
           cat "${RUNNER_TEMP}/ops-before.txt" || true
 
       - name: Push :<sha>, then :latest
+        if: ${{ !inputs.retag }}
         run: |
           set -euo pipefail
           # Order matters. Pushing `:latest` is what App Runner watches, so the
@@ -325,6 +375,66 @@ jobs:
           # even if the deployment that follows fails.
           docker push "${REPO}:${TARGET_SHA}"
           docker push "${REPO}:latest"
+
+      # ---------------------------------------------------------------------
+      # Retag path. The `:<sha>` tag pushed by an earlier run IS the rollback
+      # target; moving `:latest` onto it is a `put-image` of the manifest
+      # `:<sha>` already carries, and App Runner treats a tag update on the
+      # image it watches like any other push. Two ECR calls, no docker, no
+      # source tree — `ecr:BatchGetImage` is granted to the CI role for exactly
+      # this and nothing else (`infra/github-oidc.tf`, `EcrPushBackendImage`).
+      # ---------------------------------------------------------------------
+      - name: Retag :<sha> as :latest (rollback without a rebuild)
+        if: ${{ inputs.retag }}
+        run: |
+          set -euo pipefail
+
+          # A missing tag is not an error to the CLI: it comes back as an empty
+          # `images` list plus a `failures` entry, exit 0. So the aws call is
+          # checked for an AWS-side failure, and the manifest is checked for
+          # presence, separately.
+          if ! image="$(aws ecr batch-get-image \
+                          --repository-name "${ECR_REPOSITORY}" \
+                          --image-ids "imageTag=${TARGET_SHA}" \
+                          --query 'images[0].[imageManifest, imageManifestMediaType, imageId.imageDigest]' \
+                          --output json)"; then
+            echo "::error::aws ecr batch-get-image failed for ${ECR_REPOSITORY}:${TARGET_SHA}."
+            exit 1
+          fi
+          manifest="$(printf '%s' "${image}" | jq -r '.[0] // empty')"
+          media_type="$(printf '%s' "${image}" | jq -r '.[1] // empty')"
+          digest="$(printf '%s' "${image}" | jq -r '.[2] // empty')"
+          if [ -z "${manifest}" ]; then
+            echo "::error::No image tagged ${TARGET_SHA} in ${ECR_REPOSITORY}."
+            echo "::error::Only commits this workflow has deployed carry a :<sha> tag; a commit"
+            echo "::error::that predates the pipeline, or one whose image was pruned, has none."
+            echo "::error::Roll back by REBUILDING instead: re-run with 'sha' set and 'retag' off."
+            exit 1
+          fi
+          echo "Rolling :latest back to ${TARGET_SHA} (${digest})"
+
+          # `put-image` refuses to re-point a tag at the manifest it already
+          # names. That is the retag no-op — the equivalent of the identical
+          # digest case on the build path — and the verify step below treats
+          # it the same way: no operation fires, /api/health already reports
+          # the target commit, done.
+          if ! out="$(aws ecr put-image \
+                        --repository-name "${ECR_REPOSITORY}" \
+                        --image-tag latest \
+                        --image-manifest "${manifest}" \
+                        ${media_type:+--image-manifest-media-type "${media_type}"} 2>&1)"; then
+            case "${out}" in
+              *ImageAlreadyExistsException*)
+                echo ":latest already points at ${TARGET_SHA}; nothing to retag."
+                ;;
+              *)
+                echo "::error::aws ecr put-image failed: ${out}"
+                exit 1
+                ;;
+            esac
+          else
+            echo ":latest now points at ${TARGET_SHA}."
+          fi
 
       # ---------------------------------------------------------------------
       # Verify by operation, then by artifact. Neither alone is enough.
@@ -367,10 +477,12 @@ jobs:
               | grep -F -x -v -f "${RUNNER_TEMP}/ops-before.txt" || true
           }
 
+          if [ "${RETAG}" = "true" ]; then mode="rollback (retag)"; else mode="deploy"; fi
+
           no_op_summary() {
             echo "No deployment was triggered: ${TARGET_SHA} is already live (identical image digest)."
             {
-              echo "### Backend deploy — no-op"
+              echo "### Backend ${mode} — no-op"
               echo ""
               echo "\`${TARGET_SHA}\` was already the running image, so App Runner started no"
               echo "deployment. Verified live via \`${health_url}\`."
@@ -494,15 +606,60 @@ jobs:
 
           echo "Verified: ${TARGET_SHA} is live."
           {
-            echo "### Backend deploy — verified"
+            echo "### Backend ${mode} — verified"
             echo ""
             echo "| | |"
             echo "|---|---|"
             echo "| Commit | \`${TARGET_SHA}\` |"
             echo "| App Runner operation | \`${op_id}\` |"
             echo "| Health | [\`${health_url}\`](${health_url}) reports \`commit: ${TARGET_SHA}\` |"
-            echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"
+            echo "| Rollback | run this workflow with \`sha\` set to a known-good commit — \`retag\` on to ship its existing image, off to rebuild it |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      # The assertion above uses App Runner's DEFAULT domain, which is the
+      # right primary check: it is the service itself, with nothing in front.
+      # But diners reach `https://api.<domain>`, and a broken custom-domain
+      # association passes that check green. So: a second look through the
+      # front door, NON-gating — the deploy already succeeded, and failing the
+      # job here would only make a DNS problem read as a bad build.
+      #
+      # The URL is an optional repository variable rather than an SSM read on
+      # purpose: `infra/github-oidc.tf` grants this role no `ssm:GetParameter`,
+      # by design. A stale variable produces a warning, not a red deploy —
+      # the correct blast radius for a check that does not gate.
+      # ---------------------------------------------------------------------
+      - name: Check the custom domain serves the same commit (non-gating)
+        if: ${{ vars.PUBLIC_API_URL != '' }}
+        env:
+          PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          url="${PUBLIC_API_URL%/}/api/health"
+          # Three outcomes, kept apart: unreachable; reachable but no `commit`
+          # (an image that predates the marker, or a build without the arg);
+          # and a commit that is not ours.
+          if body="$(curl -fsS --max-time 15 "${url}" 2>/dev/null)"; then
+            current="$(printf '%s' "${body}" | jq -r '.commit // "<no commit field>"' 2>/dev/null || echo "<not JSON>")"
+          else
+            current="<unreachable>"
+          fi
+          if [ "${current}" = "${TARGET_SHA}" ]; then
+            echo "Custom domain ${url} reports commit ${TARGET_SHA}."
+            {
+              echo ""
+              echo "Custom domain [\`${url}\`](${url}) reports \`commit: ${TARGET_SHA}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::${url} reports commit '${current}', not '${TARGET_SHA}'."
+            echo "::warning::The App Runner default domain IS verified, so the deploy itself is fine;"
+            echo "::warning::this is the custom-domain association (infra: dns.tf / backend-service.tf)"
+            echo "::warning::or a stale PUBLIC_API_URL variable. Diners use this host — look at it."
+            {
+              echo ""
+              echo ":warning: Custom domain [\`${url}\`](${url}) reports \`${current}\`, not this commit — see the run annotations."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # ---------------------------------------------------------------------------
   # Before this plan, a stale site was invisible. Without this, a FAILED deploy

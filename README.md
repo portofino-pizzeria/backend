@@ -75,11 +75,11 @@ Serverless v2), provisioned by the Terraform in `../infra`. `npm run build`
 emits `dist/`; `npm start` runs it. Set the env vars from `.env.example` in the
 service configuration.
 
-`.github/workflows/deploy.yml` ships it: on a push to `master` (or a
-`workflow_dispatch` naming an older `sha`, which is how you roll back — a
-workflow *re-run* replays the same commit and is not a rollback), it runs CI,
+`.github/workflows/deploy.yml` ships it: on a push to `master` it runs CI,
 builds the image, pushes `:<sha>` then `:latest` to ECR, and then **proves the
-push is live**.
+push is live**. Only commits already on `master` can be deployed — a
+`workflow_dispatch` naming anything else is refused, because migrations run on
+container boot and a dispatch must not be a route around review.
 
 That proof is the part worth reading. The service is already `RUNNING` before
 the push and App Runner's auto-deploy is asynchronous, so polling for `RUNNING`
@@ -88,6 +88,26 @@ deployment at all and that poll still passes. Instead the workflow snapshots
 the service's deployment operations before the push, waits for one that was not
 in that snapshot, waits for it to reach `SUCCEEDED`, and only then asserts that
 `GET /api/health` reports the exact commit it built.
+
+### Rolling back
+
+A workflow *re-run* replays the same commit and is not a rollback. Roll back
+with a `workflow_dispatch` (Actions → Deploy backend → Run workflow) naming a
+known-good `sha`, in one of two modes:
+
+| `retag` | What ships | When to use it |
+|---|---|---|
+| off (default) | a **rebuild** of that commit, through CI first | the ordinary case; the tree at that commit still builds |
+| on | the image **already in ECR** at `:<sha>`, retagged to `:latest`, CI skipped | the tree at that commit no longer builds, or the dependency tree no longer resolves — which is exactly when a rollback is needed most |
+
+Both modes go through the same environment gate and the same live-commit
+verification. `retag` needs a `sha`, and it needs that commit to have been
+deployed by this workflow before (only those carry a `:<sha>` tag); for anything
+older, rebuild. The retag is two ECR calls (`batch-get-image` → `put-image`),
+which is why the CI role holds `ecr:BatchGetImage` (`infra/github-oidc.tf`).
+
+A rollback **across a migration is not a rollback** — the old code meets the
+new schema. Treat that as a forward fix.
 
 ### The `commit` field
 
@@ -111,6 +131,7 @@ Repository → Settings → Secrets and variables → Actions → **Variables**:
 | `APPRUNNER_SERVICE_ARN` | yes | — |
 | `AWS_REGION` | no | `eu-central-1` |
 | `ECR_REPOSITORY` | no | `portofino-production-backend` |
+| `PUBLIC_API_URL` | no | — (`https://api.<domain>`; when set, a verified deploy also checks the custom domain reports the same commit — **non-gating**, a warning only, since the App Runner domain is the service itself and a mismatch here is a DNS / domain-association problem, not a bad build) |
 
 Optional secret `DEPLOY_ALERT_WEBHOOK` — a Slack/Teams incoming webhook that a
 failed deploy POSTs to. Without it a failed deploy notifies nobody, which is
@@ -129,10 +150,18 @@ reviewer** — automatic to the door, human through it. Its first step verifies
 that protection actually exists and fails closed if it does not, or if it
 cannot tell.
 
-> ⚠️ **The required reviewer is not configured yet, so deploys currently stop
-> at that first step.** The environment exists and is restricted to `master`,
-> but required reviewers on a *private* repository need a GitHub Team or
-> Enterprise plan and `portofino-pizzeria` is on Free (the API answers `422
-> "Please ensure the billing plan supports the required reviewers protection
-> rule"`). Upgrade the plan, then add a reviewer under Settings → Environments
-> → `production-backend`.
+The reviewer exists since 2026-09-11. It could not be configured while the
+repository was **private**: required reviewers there need a GitHub Team or
+Enterprise plan, `portofino-pizzeria` is on Free, and the API answered `422
+"Please ensure the billing plan supports the required reviewers protection
+rule"` — so the first three `master` pushes stopped at the gate, correctly. The
+repository was made **public**, where the rule is available on Free, and
+`production-backend` now carries it alongside its `master`-only branch policy.
+Making the repository private again re-creates that 422 the next time the rule
+is edited; the gate step is what would catch it.
+
+What public costs here: `ci.yml` runs for pull requests from forks, with a
+read-only token and no secrets. The deploy workflow is `push` /
+`workflow_dispatch` only, so it never runs for a fork, and the CI role's trust
+policy is pinned to the `production-backend` environment subject, which only a
+job that passed the gate can present.
