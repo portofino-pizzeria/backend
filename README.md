@@ -149,7 +149,7 @@ Repository → Settings → Secrets and variables → Actions → **Variables**:
 | `AWS_REGION` | no | `eu-central-1` |
 | `ECR_REPOSITORY` | no | `portofino-production-backend` |
 | `PUBLIC_API_URL` | no | — (`https://api.<domain>`; when set, a verified deploy also checks the custom domain reports the same commit — **non-gating**, a warning only, since the App Runner domain is the service itself and a mismatch here is a DNS / domain-association problem, not a bad build) |
-| `DB_CLUSTER_IDENTIFIER` | yes | — (infra output `db_cluster_identifier`; the Aurora cluster snapshotted before each deploy) |
+| `DB_CLUSTER_IDENTIFIER` | yes | — (infra output `db_cluster_identifier`; the Aurora cluster snapshotted before a deploy that could migrate it) |
 | `DB_SNAPSHOT_PREFIX` | yes | — (infra output `db_pre_deploy_snapshot_prefix`; the CI role may create snapshots only under this name prefix) |
 
 Optional secret `DEPLOY_ALERT_WEBHOOK` — a Slack/Teams incoming webhook that a
@@ -236,12 +236,25 @@ rollback across a migration counts — or the live commit cannot be established.
 A deploy whose `drizzle/` matches the live commit takes no snapshot. The name is
 in the run summary and, when a deploy fails, in the alert.
 
+Two limits on what that protects, both outside this workflow:
+
+- **The skip trusts that the live commit's migrations actually ran.**
+  `/api/health` does not touch the database, and boot keeps serving when
+  migrations fail (`src/index.ts`, "serving anyway"). If a migration failed at
+  boot, a later deploy with the same `drizzle/` — a code-only hotfix, a
+  `rebuild` — applies it with no snapshot taken.
+- **Owner menu edits are not protected by any snapshot.** Every boot runs
+  `seedMenu()` (`src/db/seed.ts`), which deletes the four menu tables and reloads
+  `data/menu.json`. Edits made through the owner's menu editor are lost on every
+  deploy, scale-out and restore, snapshot or not.
+
 The CI role may create snapshots under the prefix and never delete one
 (`../infra/github-oidc.tf`, `SnapshotProductionDbBeforeDeploy`). They do not
 expire, so pruning old ones is a manual job — and not an optional one: RDS
 allows **100 manual cluster snapshots per region** by default, and at that limit
 the snapshot step fails with `SnapshotQuotaExceeded` and, failing closed, blocks
-every deploy, forward fixes included, until some are deleted.
+every deploy that takes a snapshot — any whose `drizzle/` changed, a fix to a
+migration included — until some are deleted. Code-only deploys still go out.
 
 #### Restoring it
 
@@ -257,8 +270,11 @@ matters:
    restored database too. Dispatch this workflow with `sha` set to the last
    commit before that migration. Its code runs against the migrated schema until
    step 2 pauses the service, so expect errors in that short window; from step 2
-   to step 5 nothing is served at all. (That run also snapshots the damaged
-   database, which is worth keeping.)
+   to step 5 nothing is served at all. (That run usually snapshots the damaged
+   database too — when `drizzle/` differs between the live commit and the
+   rollback target; check that step's log rather than assume.) Menu edits cannot
+   be recovered this way: every boot reseeds the menu tables (see the limits
+   above), including the boots in steps 1 and 5.
 2. **Stop traffic until step 5.** Renaming a cluster does not close the
    connections already open to it: each backend instance holds a pool
    (`src/db/client.ts`), so orders placed during the restore would land on the
