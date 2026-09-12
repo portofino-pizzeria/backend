@@ -48,16 +48,29 @@
 # is ALREADY in ECR, built at that commit with COMMIT_SHA baked in. For that
 # case the deploy RETAGS it (`ecr:BatchGetImage` the `:<sha>` manifest,
 # `ecr:PutImage` it as `:latest`) instead of rebuilding: it is faster, it
-# ships byte-for-byte the artifact that was known good, and it still works on
-# the day the tree at that sha no longer builds — which is exactly the day a
-# rollback is needed. The infra role grants `ecr:BatchGetImage` for this and
-# nothing else (infra/github-oidc.tf, statement EcrPushBackendImage).
+# ships byte-for-byte the artifact that was known good (the manifest is
+# re-hashed here and must equal ECR's own digest for it), and it does not
+# need `docker build` to succeed at that sha — a removed base-image tag or a
+# registry outage cannot block it. What it does NOT skip is CI: the `test`
+# job still runs at the target commit before the gate, so a rollback to a
+# commit whose `npm ci` or tests no longer pass is refused there, retag or
+# not. Skipping that gate would be a separate decision this file does not
+# make. `ecr:BatchGetImage` is in the infra role's push statement for this
+# retag alone (infra/github-oidc.tf, statement EcrPushBackendImage).
 #
 # When no `:<sha>` image exists — a fresh master push, or a rollback to a
-# commit that predates this pipeline — the workflow builds one. Either way the
-# verification below is identical: a retag is a push of `:latest` as far as
-# ECR's event stream and App Runner's auto-deploy are concerned, and the
-# health assertion proves the same thing about the same field.
+# commit that predates this pipeline — the workflow builds one, as does a
+# dispatch with `rebuild: true`. Either way the verification below is
+# identical: a retag is a push of `:latest` as far as ECR's event stream and
+# App Runner's auto-deploy are concerned, and the health assertion proves the
+# same thing about the same field.
+#
+# One consequence worth knowing: re-dispatching the sha that `:latest` ALREADY
+# names is now a no-op rather than a fresh build with a fresh digest. That
+# used to be a way to make App Runner redeploy unchanged code; the retag step
+# now checks `/api/health` in that case and fails fast, naming `rebuild: true`
+# as the lever, instead of waiting fifteen minutes for a deployment that an
+# unchanged tag will never start.
 #
 # A rollback across a migration is NOT a rollback (the old code runs against
 # the new schema) and must be treated as a forward fix. Nothing here can tell
@@ -94,6 +107,14 @@ on:
           replays the same commit, so a re-run is not a rollback.
         required: false
         type: string
+      rebuild:
+        description: >-
+          Build the image from source even if ECR already holds one tagged
+          with this commit. The only way to give App Runner a NEW digest for
+          a sha it is already serving (or failed to serve).
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -259,12 +280,9 @@ jobs:
               echo "::error::Backend deploys run drizzle/ migrations against production Aurora on"
               echo "::error::container boot, so an unattended deploy applies an irreversible schema"
               echo "::error::change. Add a required reviewer under Settings -> Environments ->"
-              echo "::error::${ENVIRONMENT_NAME}."
-              echo "::error::"
-              echo "::error::Known blocker: required reviewers on a PRIVATE repository need a"
-              echo "::error::GitHub Team/Enterprise plan, and portofino-pizzeria is on Free. The"
-              echo "::error::API returns 422 'Please ensure the billing plan supports the required"
-              echo "::error::reviewers protection rule'. Upgrade the plan, then add the reviewer."
+              echo "::error::${ENVIRONMENT_NAME}. One was configured on 2026-09-11; if it is gone,"
+              echo "::error::it was removed. Check with: gh api repos/${GITHUB_REPOSITORY}/environments/"
+              echo "::error::${ENVIRONMENT_NAME} --jq '[.protection_rules[].type]'"
               exit 1
               ;;
           esac
@@ -308,9 +326,16 @@ jobs:
         id: existing
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
+          FORCE_REBUILD: ${{ inputs.rebuild }}
         run: |
           set -euo pipefail
           echo "REPO=${REGISTRY}/${ECR_REPOSITORY}" >> "$GITHUB_ENV"
+
+          if [ "${FORCE_REBUILD}" = "true" ]; then
+            echo "rebuild=true: building from source without asking ECR."
+            echo "strategy=build" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # One call answers both questions: is `:<sha>` there, and is `:latest`
           # already that same image. A MISSING tag is not an error to this API —
@@ -323,13 +348,13 @@ jobs:
                    --output json)"
 
           sha_digest="$(jq -r --arg t "${TARGET_SHA}" \
-            '.images[] | select(.imageId.imageTag == $t) | .imageId.imageDigest' <<<"${out}")"
+            '.images[]? | select(.imageId.imageTag == $t) | .imageId.imageDigest' <<<"${out}")"
           latest_digest="$(jq -r \
-            '.images[] | select(.imageId.imageTag == "latest") | .imageId.imageDigest' <<<"${out}")"
+            '.images[]? | select(.imageId.imageTag == "latest") | .imageId.imageDigest' <<<"${out}")"
 
           if [ -z "${sha_digest}" ]; then
             code="$(jq -r --arg t "${TARGET_SHA}" \
-              '.failures[] | select(.imageId.imageTag == $t) | .failureCode' <<<"${out}")"
+              '.failures[]? | select(.imageId.imageTag == $t) | .failureCode' <<<"${out}")"
             if [ "${code}" != "ImageNotFound" ]; then
               echo "::error::ECR could not say whether ${ECR_REPOSITORY}:${TARGET_SHA} exists"
               echo "::error::(failure code '${code:-<none>}'). That is UNKNOWN, not 'not built';"
@@ -341,14 +366,29 @@ jobs:
             exit 0
           fi
 
-          # Keep the manifest verbatim, media type included: `:latest` today is
-          # an OCI image index (buildx provenance), and PutImage needs the same
-          # media type it was stored under or it rejects the manifest.
-          jq -r --arg t "${TARGET_SHA}" \
-            '.images[] | select(.imageId.imageTag == $t) | .imageManifest' <<<"${out}" \
+          # Keep the manifest BYTE-verbatim. ECR's digest is sha256 of exactly
+          # these bytes, and PutImage stores what it is given: `jq -j`, because
+          # `-r` would append a newline, and one extra byte is a different
+          # digest — the retagged :latest would then never compare equal to
+          # :<sha>, the already-latest guard below would never fire, and a
+          # second identical rollback would end in ImageAlreadyExistsException.
+          # So the file is re-hashed and checked against ECR's own digest before
+          # anything is pushed: an assertion, not a review-time argument.
+          jq -j --arg t "${TARGET_SHA}" \
+            '.images[]? | select(.imageId.imageTag == $t) | .imageManifest' <<<"${out}" \
             > "${RUNNER_TEMP}/manifest.json"
+          file_digest="sha256:$(sha256sum "${RUNNER_TEMP}/manifest.json" | cut -c1-64)"
+          if [ "${file_digest}" != "${sha_digest}" ]; then
+            echo "::error::The manifest written for ${ECR_REPOSITORY}:${TARGET_SHA} hashes to"
+            echo "::error::${file_digest}, but ECR reports ${sha_digest}. Retagging it would"
+            echo "::error::create a different image. Refusing."
+            exit 1
+          fi
+          # Media type carried along too: :latest today is an OCI image index
+          # (buildx provenance). ECR can infer it from the manifest body, but
+          # stating it costs nothing and removes one inference from the path.
           media_type="$(jq -r --arg t "${TARGET_SHA}" \
-            '.images[] | select(.imageId.imageTag == $t) | .imageManifestMediaType' <<<"${out}")"
+            '.images[]? | select(.imageId.imageTag == $t) | .imageManifestMediaType' <<<"${out}")"
 
           echo "Found ${ECR_REPOSITORY}:${TARGET_SHA} (${sha_digest}): retagging, not rebuilding."
           echo "strategy=retag" >> "$GITHUB_OUTPUT"
@@ -412,10 +452,31 @@ jobs:
           if [ "${ALREADY_LATEST}" = "true" ]; then
             # PutImage of a tag onto the manifest it already names is
             # ImageAlreadyExistsException, not a no-op — and there is nothing
-            # to push anyway. App Runner fires no deployment for this; the
-            # verify step's no-op arm settles it against /api/health.
-            echo ":latest is already ${TARGET_SHA}; nothing to retag."
-            exit 0
+            # to push anyway. App Runner fires no deployment for an unchanged
+            # tag, so the only question is whether the service is serving this
+            # image already. Ask now rather than let the verify step wait out
+            # its fifteen-minute budget to reach the same answer.
+            host="$(aws apprunner describe-service --service-arn "${SERVICE_ARN}" \
+                      --query 'Service.ServiceUrl' --output text)"
+            # Three answers, kept apart because their fixes differ: the commit
+            # we want, some other commit (or an image built without the build
+            # arg, which reports no field at all), or no answer from the host.
+            if body="$(curl -fsS --max-time 15 "https://${host}/api/health" 2>/dev/null)"; then
+              current="$(jq -r '.commit // "<no commit field>"' <<<"${body}" 2>/dev/null || echo '<not JSON>')"
+            else
+              current='<unreachable>'
+            fi
+            if [ "${current}" = "${TARGET_SHA}" ]; then
+              echo ":latest is already ${TARGET_SHA} and the service is serving it; nothing to retag."
+              echo "(The verify step will confirm the same thing through its no-op arm.)"
+              exit 0
+            fi
+            echo "::error:::latest already names the ${TARGET_SHA} image, but /api/health reports"
+            echo "::error::commit '${current}'. An unchanged tag starts no App Runner"
+            echo "::error::deployment, so retagging cannot fix this. Re-run this workflow with"
+            echo "::error::rebuild: true to push a fresh digest for the same commit, or start a"
+            echo "::error::deployment from the App Runner console."
+            exit 1
           fi
           # A PutImage on `:latest` is a push of that tag to ECR's event stream,
           # which is what App Runner's auto-deploy watches — the same trigger a

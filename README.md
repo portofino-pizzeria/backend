@@ -154,13 +154,20 @@ commit, which it does for anything this pipeline deployed before:
 
 | `:<sha>` in ECR? | The workflow… |
 |---|---|
-| yes (a previous deploy) | **retags** it as `:latest` — no rebuild, byte-for-byte the artifact that was known good, and it works even if the tree at that commit no longer builds |
-| no (predates the pipeline) | builds it from source, pushes `:<sha>` then `:latest` |
+| yes (a previous deploy) | **retags** it as `:latest` — no `docker build`, byte-for-byte the artifact that was known good (the workflow re-hashes the manifest against ECR's digest before pushing) |
+| no (predates the pipeline), or `rebuild` ticked | builds it from source, pushes `:<sha>` then `:latest` |
 
-Either way CI runs at that commit first, the deploy waits at the same
-reviewer gate, and the same verification proves `/api/health` reports that
-exact `commit` before the run goes green. The retag needs `ecr:BatchGetImage`
-on the CI role, which `../infra/github-oidc.tf` grants for precisely this.
+Either way CI runs at that commit first — so a commit whose dependencies or
+tests no longer pass is refused at the gate, retag or not — the deploy waits
+at the same reviewer gate, and the same verification proves `/api/health`
+reports that exact `commit` before the run goes green. The retag needs
+`ecr:BatchGetImage` on the CI role, which `../infra/github-oidc.tf` grants
+for precisely this.
+
+Dispatching the sha `:latest` already names is a no-op: an unchanged tag
+starts no App Runner deployment. If the service is not actually serving that
+commit (a revision App Runner rolled back, say), the workflow says so
+immediately; tick **`rebuild`** to push a fresh digest for the same commit.
 
 **A rollback across a migration is not a rollback.** Migrations run on boot
 and are not reversed by deploying older code; the old code would run against
