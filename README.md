@@ -242,15 +242,17 @@ in the run summary and, when a deploy fails, in the alert.
 
 Two limits on what that protects, both outside this workflow:
 
-- **The skip trusts that the live commit's migrations actually ran.**
+- **The skip trusts that the live commit's migrations actually ran** (#14).
   `/api/health` does not touch the database, and boot keeps serving when
   migrations fail (`src/index.ts`, "serving anyway"). If a migration failed at
   boot, a later deploy with the same `drizzle/` — a code-only hotfix, a
-  `rebuild` — applies it with no snapshot taken.
-- **Owner menu edits are not protected by any snapshot.** Every boot runs
-  `seedMenu()` (`src/db/seed.ts`), which deletes the four menu tables and reloads
-  `data/menu.json`. Edits made through the owner's menu editor are lost on every
-  deploy, scale-out and restore, snapshot or not.
+  `rebuild` — can apply it with no snapshot taken, and so can a plain scale-out
+  of the live image, with no deploy at all.
+- **Owner menu edits are not protected by any snapshot** (#13). Every boot whose
+  database init succeeds runs `seedMenu()` (`src/db/seed.ts`), which deletes all
+  rows in the four menu tables and reloads `data/menu.json`. Edits made through
+  the owner's menu editor are lost on every deploy, scale-out and restore,
+  snapshot or not.
 
 The CI role may create snapshots under the prefix and never delete one
 (`../infra/github-oidc.tf`, `SnapshotProductionDbBeforeDeploy`). They do not
@@ -258,7 +260,8 @@ expire, so pruning old ones is a manual job — and not an optional one: RDS
 allows **100 manual cluster snapshots per region** by default, and at that limit
 the snapshot step fails with `SnapshotQuotaExceeded` and, failing closed, blocks
 every deploy that takes a snapshot — any whose `drizzle/` changed, a fix to a
-migration included — until some are deleted. Code-only deploys still go out.
+migration included, and any whose live commit could not be read (so, during an
+outage, code-only hotfixes too) — until some are deleted.
 
 #### Restoring it
 
