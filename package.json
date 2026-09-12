@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Portofino Pizzeria — ordering API (menu, orders, payments, kitchen)",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.6"
   },
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
@@ -15,8 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:seed": "tsx src/db/seed.ts",
+    "db:migrate": "tsx --env-file=.env src/db/migrate.ts",
+    "db:seed": "tsx --env-file=.env src/db/seed.ts",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down"
   },

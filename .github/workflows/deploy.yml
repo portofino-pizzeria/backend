@@ -526,6 +526,87 @@ jobs:
             curl -fsS --max-time 15 "${health_url}" 2>/dev/null | jq -r '.commit // ""' 2>/dev/null || true
           }
 
+          # The guard on customer PII is armed. The commit assertion proves the
+          # CODE; this proves the CONFIGURATION it runs under. `kitchen`
+          # (src/config.ts `kitchenAuthMode`) is `token` when KITCHEN_TOKEN is
+          # set. Either other value is a broken deployment: `auth-disabled`
+          # means KITCHEN_AUTH_DISABLED=1 reached production and
+          # /api/kitchen/orders is serving every order's customer name, phone
+          # number and address to anyone on the internet; `unconfigured` means
+          # the kitchen dashboard refuses every request. Neither is a deploy to
+          # call verified, so both fail this job — the deployment itself has
+          # already happened, and a red run (plus the `alert` job) is how
+          # anyone finds out.
+          #
+          # `commit` and `kitchen` are read from the SAME body, and the body is
+          # retried until its commit is TARGET_SHA: right after a deploy the
+          # edge still mixes old and new instances, and a single read that
+          # landed on an old one would report the OLD build's posture — or no
+          # field at all — for the new build. Three outcomes that a bare
+          # `jq -r '.kitchen // ""'` would fold into one empty string are kept
+          # apart here: the body could not be read at all (an error — step 3
+          # just read it), the field is present (asserted), and the field is
+          # absent. Absent is decided by the SOURCE this job has checked out at
+          # TARGET_SHA: if src/app.ts serves the field and the service does
+          # not, that is an error; if the source predates the field (a
+          # rollback dispatch naming an older sha) it is a notice, so the
+          # rollback path stays open. Sets `kitchen` for the summary.
+          kitchen=""
+          assert_kitchen_guard() {
+            local body="" i
+            for i in $(seq 1 20); do          # the same ~2 minutes step 3 allows
+              body="$(curl -fsS --max-time 15 "${health_url}" 2>/dev/null || true)"
+              if [ "$(printf '%s' "${body}" | jq -r '.commit // ""' 2>/dev/null || true)" = "${TARGET_SHA}" ]; then
+                break
+              fi
+              body=""
+              sleep 6
+            done
+            if [ -z "${body}" ]; then
+              echo "::error::Could not re-read ${health_url} as commit ${TARGET_SHA} to check the kitchen"
+              echo "::error::guard's posture. The commit assertion passed moments ago, so this is a read"
+              echo "::error::failure, not a rollback — the guard is UNVERIFIED, which is not verified."
+              exit 1
+            fi
+
+            if [ "$(printf '%s' "${body}" | jq -r 'has("kitchen")')" != "true" ]; then
+              if grep -q 'kitchen: kitchenAuthMode()' src/app.ts; then
+                echo "::error::${health_url} reports commit ${TARGET_SHA} with no 'kitchen' field, but"
+                echo "::error::src/app.ts at that commit serves one. The build serving traffic is not"
+                echo "::error::the build this source describes."
+                exit 1
+              fi
+              kitchen=""
+              echo "::notice::${health_url} reports no 'kitchen' field, and src/app.ts at ${TARGET_SHA} does"
+              echo "::notice::not serve one — this build predates the guard report (a rollback), so the"
+              echo "::notice::guard's posture was not checked."
+              return 0
+            fi
+
+            kitchen="$(printf '%s' "${body}" | jq -r '.kitchen')"
+            case "${kitchen}" in
+              token)
+                echo "Verified: the kitchen guard is armed (kitchen: token)."
+                ;;
+              auth-disabled)
+                echo "::error::${health_url} reports kitchen: auth-disabled — KITCHEN_AUTH_DISABLED=1 is set on the service, so"
+                echo "::error::/api/kitchen/orders is serving customer names, phone numbers and addresses UNAUTHENTICATED."
+                echo "::error::Remove KITCHEN_AUTH_DISABLED from the App Runner configuration (infra/backend-service.tf) and redeploy."
+                exit 1
+                ;;
+              *)
+                echo "::error::${health_url} reports kitchen: '${kitchen}' — KITCHEN_TOKEN is not reaching the service, so every"
+                echo "::error::kitchen request is refused and the dashboard is dead. It is wired from the kitchen_token secret in"
+                echo "::error::infra/backend-service.tf; check that wiring and redeploy."
+                exit 1
+                ;;
+            esac
+          }
+
+          kitchen_summary_row() {
+            echo "| Kitchen guard | \`kitchen: ${kitchen:-<not reported by this build>}\` |"
+          }
+
           # Returns the deployment operations that were not in the pre-push
           # snapshot, or exits non-zero if AWS could not be asked.
           #
@@ -549,13 +630,20 @@ jobs:
               | grep -F -x -v -f "${RUNNER_TEMP}/ops-before.txt" || true
           }
 
+          # An identical-digest redeploy still ends in the operator reading
+          # "verified", so the guard's posture is asserted on this path too.
           no_op_summary() {
+            assert_kitchen_guard
             echo "No deployment was triggered: ${TARGET_SHA} is already live (identical image digest)."
             {
               echo "### Backend deploy — no-op"
               echo ""
               echo "\`${TARGET_SHA}\` was already the running image, so App Runner started no"
               echo "deployment. Verified live via \`${health_url}\`."
+              echo ""
+              echo "| | |"
+              echo "|---|---|"
+              kitchen_summary_row
             } >> "$GITHUB_STEP_SUMMARY"
           }
 
@@ -677,39 +765,10 @@ jobs:
           echo "Verified: ${TARGET_SHA} is live."
 
           # --- 4. The guard on customer PII is armed ---------------------------
-          # Step 3 proves the CODE; this proves the CONFIGURATION it runs under.
-          # `kitchen` (src/config.ts `kitchenAuthMode`) is `token` when
-          # KITCHEN_TOKEN is set. Either other value is a broken deployment:
-          # `auth-disabled` means KITCHEN_AUTH_DISABLED=1 reached production and
-          # /api/kitchen/orders is serving every order's customer name, phone
-          # number and address to anyone on the internet; `unconfigured` means
-          # the kitchen dashboard refuses every request. Neither is a deploy to
-          # call verified, so both fail this job — the deployment itself has
-          # already happened, and a red run (plus the `alert` job) is how anyone
-          # finds out. An EMPTY read means the live build predates the field
-          # (a rollback to an older commit): reported, not failed, so the
-          # rollback path stays open.
-          kitchen="$(curl -fsS --max-time 15 "${health_url}" 2>/dev/null | jq -r '.kitchen // ""' 2>/dev/null || true)"
-          case "${kitchen}" in
-            token)
-              echo "Verified: the kitchen guard is armed (kitchen: token)."
-              ;;
-            "")
-              echo "::notice::${health_url} reports no 'kitchen' field — this build predates it, so the guard's posture was not checked."
-              ;;
-            auth-disabled)
-              echo "::error::${health_url} reports kitchen: auth-disabled — KITCHEN_AUTH_DISABLED=1 is set on the service, so"
-              echo "::error::/api/kitchen/orders is serving customer names, phone numbers and addresses UNAUTHENTICATED."
-              echo "::error::Remove KITCHEN_AUTH_DISABLED from the App Runner configuration (infra/backend-service.tf) and redeploy."
-              exit 1
-              ;;
-            *)
-              echo "::error::${health_url} reports kitchen: '${kitchen}' — KITCHEN_TOKEN is not reaching the service, so every"
-              echo "::error::kitchen request is refused and the dashboard is dead. It is wired from the kitchen_token secret in"
-              echo "::error::infra/backend-service.tf; check that wiring and redeploy."
-              exit 1
-              ;;
-          esac
+          # See `assert_kitchen_guard` above: same body as the commit, retried
+          # until that body IS the target build, fails on both non-`token`
+          # values and on an unreadable body, notices only a genuine rollback.
+          assert_kitchen_guard
 
           {
             echo "### Backend deploy — verified"
@@ -720,7 +779,7 @@ jobs:
             echo "| Image | ${STRATEGY} |"
             echo "| App Runner operation | \`${op_id}\` |"
             echo "| Health | [\`${health_url}\`](${health_url}) reports \`commit: ${TARGET_SHA}\` |"
-            echo "| Kitchen guard | \`kitchen: ${kitchen:-<not reported by this build>}\` |"
+            kitchen_summary_row
             echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"
           } >> "$GITHUB_STEP_SUMMARY"
 
