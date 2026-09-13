@@ -493,6 +493,7 @@ jobs:
           # whatever each call costs.
           status=""
           read_failures=0
+          absent_reads=0
           last_error=""
           deadline=$((SECONDS + 1680))     # 28 minutes
           while :; do
@@ -500,6 +501,7 @@ jobs:
                             --query 'DBClusterSnapshots[0].Status' --output text 2>"${RUNNER_TEMP}/describe.err")"; then
               status="${current}"
               read_failures=0
+              absent_reads=0
               case "${status}" in
                 creating|copying) ;;
                 *) break ;;                 # available, or a terminal status
@@ -507,11 +509,19 @@ jobs:
             else
               status='<unreadable>'
               last_error="$(tr '\n' ' ' < "${RUNNER_TEMP}/describe.err")"
-              # A refused create (IAM denial, bad identifier, full quota) is not
-              # UNKNOWN: its own error is above, and RDS confirms nothing exists.
-              if [ "${create_failed}" -eq 1 ] && grep -q 'DBClusterSnapshotNotFound' "${RUNNER_TEMP}/describe.err"; then
-                status='<not created>'
-                break
+              # A refused create (an IAM denial, a full quota, an identifier RDS
+              # rejects) is not UNKNOWN: its own error is above, and RDS answers
+              # that no such snapshot exists. Required TWICE in a row, one sleep
+              # apart, because a create that did reach RDS despite its CLI error
+              # can read as absent for a few seconds before it registers.
+              if [ "${create_failed}" -eq 1 ] && grep -qE 'DBClusterSnapshotNotFound|InvalidParameterValue' "${RUNNER_TEMP}/describe.err"; then
+                absent_reads=$((absent_reads + 1))
+                if [ "${absent_reads}" -ge 2 ]; then
+                  status='<not created>'
+                  break
+                fi
+              else
+                absent_reads=0
               fi
               read_failures=$((read_failures + 1))
               [ "${read_failures}" -ge 5 ] && break
