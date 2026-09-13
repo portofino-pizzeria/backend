@@ -470,7 +470,7 @@ jobs:
           # can reach RDS while the CLI still fails (a read timeout, a retry
           # answered AlreadyExists). The snapshot's own status, read below,
           # does - and one that was never created reads as not found there
-          # and refuses the deploy at once.
+          # twice in a row and refuses the deploy within one poll interval.
           create_failed=0
           if ! aws rds create-db-cluster-snapshot \
                  --db-cluster-identifier "${DB_CLUSTER_IDENTIFIER}" \
