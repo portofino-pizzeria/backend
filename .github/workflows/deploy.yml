@@ -469,14 +469,16 @@ jobs:
           # The create call's exit code does not decide the outcome: the request
           # can reach RDS while the CLI still fails (a read timeout, a retry
           # answered AlreadyExists). The snapshot's own status, read below,
-          # does - and one that was never created reads as unreadable there
-          # and refuses the deploy.
+          # does - and one that was never created reads as not found there
+          # and refuses the deploy at once.
+          create_failed=0
           if ! aws rds create-db-cluster-snapshot \
                  --db-cluster-identifier "${DB_CLUSTER_IDENTIFIER}" \
                  --db-cluster-snapshot-identifier "${id}" \
                  --tags "Key=purpose,Value=pre-deploy" "Key=target-commit,Value=${TARGET_SHA}" \
                         "Key=live-commit,Value=${live_commit_tag}" "Key=run,Value=${GITHUB_RUN_ID}" \
                  --query 'DBClusterSnapshot.DBClusterSnapshotIdentifier' --output text; then
+            create_failed=1
             echo "::warning::create-db-cluster-snapshot for ${id} returned an error. It may still have reached"
             echo "::warning::RDS, so the snapshot's own status decides the outcome below, not this exit code."
           fi
@@ -491,10 +493,11 @@ jobs:
           # whatever each call costs.
           status=""
           read_failures=0
+          last_error=""
           deadline=$((SECONDS + 1680))     # 28 minutes
           while :; do
             if current="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${id}" \
-                            --query 'DBClusterSnapshots[0].Status' --output text 2>/dev/null)"; then
+                            --query 'DBClusterSnapshots[0].Status' --output text 2>"${RUNNER_TEMP}/describe.err")"; then
               status="${current}"
               read_failures=0
               case "${status}" in
@@ -503,6 +506,13 @@ jobs:
               esac
             else
               status='<unreadable>'
+              last_error="$(tr '\n' ' ' < "${RUNNER_TEMP}/describe.err")"
+              # A refused create (IAM denial, bad identifier, full quota) is not
+              # UNKNOWN: its own error is above, and RDS confirms nothing exists.
+              if [ "${create_failed}" -eq 1 ] && grep -q 'DBClusterSnapshotNotFound' "${RUNNER_TEMP}/describe.err"; then
+                status='<not created>'
+                break
+              fi
               read_failures=$((read_failures + 1))
               [ "${read_failures}" -ge 5 ] && break
             fi
@@ -514,8 +524,11 @@ jobs:
             case "${status}" in
               creating|copying)
                 echo "::error::It was still ${status} after 28 minutes and may yet complete; check RDS before re-running." ;;
+              '<not created>')
+                echo "::error::The create call failed (its error is above) and RDS reports no snapshot named ${id}." ;;
               '<unreadable>')
-                echo "::error::Its status could not be read (${read_failures} failed reads in a row when the wait ended) - it may not exist, so whether there is a restore point is UNKNOWN." ;;
+                echo "::error::Its status could not be read (${read_failures} failed reads in a row when the wait ended) - it may not exist, so whether there is a restore point is UNKNOWN."
+                echo "::error::Last describe error: ${last_error:-<none captured>}" ;;
               *)
                 echo "::error::'${status}' is terminal: this snapshot will not become a restore point." ;;
             esac
@@ -532,7 +545,7 @@ jobs:
 
       # A fresh one-hour OIDC session for everything from the push onward. The
       # first session has been running since before the build and the DB
-      # snapshot (whose wait alone can take 30 minutes), and the verification
+      # snapshot (whose status poll alone can take 28 minutes), and the verification
       # after the push can take ~45 by itself; on a slow day one session does
       # not cover both, and an ExpiredToken mid-verify would report a
       # deployment that is really in flight as UNKNOWN. (The ECR login above is
