@@ -237,7 +237,7 @@ jobs:
     needs: [resolve, test]
     runs-on: ubuntu-latest
     # 90, budgeted rather than guessed: up to ~38 minutes before the push (gate,
-    # build, and the DB snapshot, whose `aws rds wait` gives up after 30) plus up
+    # build, and the DB snapshot, whose status poll stops at 28) plus up
     # to ~46 after it (push, ~17 minutes for a deployment to start, ~22 for it
     # to finish, the health and guard reads). The OIDC session is the other
     # ceiling — the CI role sets no max_session_duration, so one session lasts
@@ -466,26 +466,59 @@ jobs:
           if printf '%s' "${live_commit}" | grep -qE '^[0-9a-f]{40}$'; then
             live_commit_tag="${live_commit}"
           fi
-          aws rds create-db-cluster-snapshot \
-            --db-cluster-identifier "${DB_CLUSTER_IDENTIFIER}" \
-            --db-cluster-snapshot-identifier "${id}" \
-            --tags "Key=purpose,Value=pre-deploy" "Key=target-commit,Value=${TARGET_SHA}" \
-                   "Key=live-commit,Value=${live_commit_tag}" "Key=run,Value=${GITHUB_RUN_ID}" \
-            --query 'DBClusterSnapshot.DBClusterSnapshotIdentifier' --output text
+          # The create call's exit code does not decide the outcome: the request
+          # can reach RDS while the CLI still fails (a read timeout, a retry
+          # answered AlreadyExists). The snapshot's own status, read below,
+          # does - and one that was never created reads as unreadable there
+          # and refuses the deploy.
+          if ! aws rds create-db-cluster-snapshot \
+                 --db-cluster-identifier "${DB_CLUSTER_IDENTIFIER}" \
+                 --db-cluster-snapshot-identifier "${id}" \
+                 --tags "Key=purpose,Value=pre-deploy" "Key=target-commit,Value=${TARGET_SHA}" \
+                        "Key=live-commit,Value=${live_commit_tag}" "Key=run,Value=${GITHUB_RUN_ID}" \
+                 --query 'DBClusterSnapshot.DBClusterSnapshotIdentifier' --output text; then
+            echo "::warning::create-db-cluster-snapshot for ${id} returned an error. It may still have reached"
+            echo "::warning::RDS, so the snapshot's own status decides the outcome below, not this exit code."
+          fi
 
           # Wait for AVAILABLE, not for the create call to return: a snapshot
           # still creating when a migration starts is not yet a restore point.
-          # The waiter gives up after 30 minutes with a bare non-zero exit, which
-          # under `set -e` would end the step with no explanation; say why.
-          if ! aws rds wait db-cluster-snapshot-available --db-cluster-snapshot-identifier "${id}"; then
-            echo "::error::Snapshot ${id} did not become available (waiter failed or gave up after 30 minutes)."
-            echo "::error::Refusing to deploy a possible migration without a restore point. It may still complete; check RDS."
-            exit 1
-          fi
-          status="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${id}" \
-            --query 'DBClusterSnapshots[0].Status' --output text)"
+          # Polled rather than `aws rds wait`, whose waiter stops on the FIRST
+          # API error: one throttle while the snapshot is still creating would
+          # refuse a deploy that only needed another minute. A single failed
+          # read is retried; five in a row end the wait as UNKNOWN. Bounded by a
+          # deadline, not an iteration count, so it ends with its own message
+          # whatever each call costs.
+          status=""
+          read_failures=0
+          deadline=$((SECONDS + 1680))     # 28 minutes
+          while :; do
+            if current="$(aws rds describe-db-cluster-snapshots --db-cluster-snapshot-identifier "${id}" \
+                            --query 'DBClusterSnapshots[0].Status' --output text 2>/dev/null)"; then
+              status="${current}"
+              read_failures=0
+              case "${status}" in
+                creating|copying) ;;
+                *) break ;;                 # available, or a terminal status
+              esac
+            else
+              status='<unreadable>'
+              read_failures=$((read_failures + 1))
+              [ "${read_failures}" -ge 5 ] && break
+            fi
+            [ "${SECONDS}" -ge "${deadline}" ] && break
+            sleep 20
+          done
           if [ "${status}" != "available" ]; then
-            echo "::error::Snapshot ${id} is ${status}, not available - refusing to deploy a possible migration without a restore point."
+            echo "::error::Snapshot ${id} is not available (status: ${status}) - refusing to deploy a possible migration without a restore point."
+            case "${status}" in
+              creating|copying)
+                echo "::error::It was still ${status} after 28 minutes and may yet complete; check RDS before re-running." ;;
+              '<unreadable>')
+                echo "::error::Its status could not be read (${read_failures} failed reads in a row when the wait ended) - it may not exist, so whether there is a restore point is UNKNOWN." ;;
+              *)
+                echo "::error::'${status}' is terminal: this snapshot will not become a restore point." ;;
+            esac
             exit 1
           fi
           echo "Restore point ready: ${id}"
