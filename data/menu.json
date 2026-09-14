@@ -20,10 +20,11 @@
     "separatePickupPricing": false,
     "evidence": "Each item renders exactly one price set; no page carries a second, pickup-specific price. The WPPizza runtime config advertises compat.puDel=1 (its pickup/delivery compatibility flag), and pickup vs delivery is chosen in the AJAX cart, but no per-item pickup price is published anywhere in the menu markup.",
     "pickupOnlyOffers": [
-      "mittwochs-angebot-1",
-      "mittwochs-angebot-2"
+      "angebote-mittwochs-angebot-1",
+      "angebote-mittwochs-angebot-2"
     ],
-    "pickupOnlyOfferNote": "Both Mittwochs-Angebote are marked '(für Selbstabholer)' in their own description — pickup-only products, not a pickup price for a delivered item."
+    "pickupOnlyOfferNote": "Both Mittwochs-Angebote are marked '(für Selbstabholer)' in their own description — pickup-only products, not a pickup price for a delivered item.",
+    "pickupOnlyOfferIdsCorrected": "2026-09-14: were 'mittwochs-angebot-1/-2', the ids before the 2026-08-29 rederivation prefixed item ids with their category; nothing consumed the list until pickup was built, so the stale ids went unnoticed."
   },
   "openingHours": [
     {
