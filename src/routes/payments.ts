@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { config, stripeEnabled } from '../config.js';
+import { now } from '../lib/clock.js';
 import { badRequest, notFound } from '../lib/http-errors.js';
+import { refusalFor, shopStatus } from '../lib/shop.js';
 import { getOrder, markOrderPaid } from '../lib/order-service.js';
 import { paymentProviders, startCheckout } from '../payments/index.js';
 import { confirmStripeSession, parseWebhook } from '../payments/stripe.js';
@@ -89,6 +91,12 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
     if (order.status !== 'pending_payment') {
       throw badRequest('This order has already been paid or is not payable.');
     }
+    // The hours again, at the moment money is about to be taken. An order
+    // created at 21:59 and paid at 22:20 would otherwise reach the kitchen as a
+    // paid delivery after the last delivery time; after payment nothing can
+    // refuse it.
+    const refusal = refusalFor(order.fulfilment, shopStatus(now()));
+    if (refusal) throw badRequest(refusal);
 
     return startCheckout(order, parsed.data.provider);
   });

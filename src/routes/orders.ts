@@ -104,11 +104,15 @@ const createOrderSchema = z.object({
       ),
       // Optional at this layer; required for a delivery by the refinement on
       // the whole order. An empty or invisible-only address counts as absent.
-      address: z
-        .string({ invalid_type_error: 'Bitte eine Lieferadresse angeben.' })
-        .transform((value) => value.replace(INVISIBLE, '').trim())
-        .pipe(z.string().max(500, 'Die Lieferadresse ist zu lang (höchstens 500 Zeichen).'))
-        .optional(),
+      // `null` counts as absent too: a client sending `address: null` on a
+      // pickup must not be refused for an address the order does not need.
+      address: z.preprocess(
+        (value) => (value === null ? undefined : value),
+        z
+          .string({ invalid_type_error: 'Bitte eine Lieferadresse angeben.' })
+          .transform((value) => value.replace(INVISIBLE, '').trim())
+          .optional(),
+      ),
       notes: z.string().max(1000).optional(),
     },
     {
@@ -118,12 +122,21 @@ const createOrderSchema = z.object({
     },
   ),
 }).superRefine((order, ctx) => {
+  // The address matters only for a delivery. A pickup's address is discarded
+  // before storage, so it is neither required nor length-checked.
+  if (order.fulfilment !== 'delivery') return;
   const address = order.customer.address ?? '';
-  if (order.fulfilment === 'delivery' && !READABLE.test(address)) {
+  if (!READABLE.test(address)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['customer', 'address'],
       message: 'Bitte eine Lieferadresse angeben.',
+    });
+  } else if (address.length > 500) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['customer', 'address'],
+      message: 'Die Lieferadresse ist zu lang (höchstens 500 Zeichen).',
     });
   }
 });

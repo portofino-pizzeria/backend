@@ -132,6 +132,67 @@ describe('Lieferung / Abholung', () => {
   });
 });
 
+describe('pickup and the address field', () => {
+  it('a pickup that sends address: null is accepted', async () => {
+    await seedMargherita();
+    const order = await createOrder({
+      fulfilment: 'pickup',
+      items: LINE,
+      customer: { ...PICKUP_CUSTOMER, address: null },
+    });
+    expect(order.fulfilment).toBe('pickup');
+  });
+
+  it('a pickup is not refused for an over-long address it discards', async () => {
+    await seedMargherita();
+    const order = await createOrder({
+      fulfilment: 'pickup',
+      items: LINE,
+      customer: { ...PICKUP_CUSTOMER, address: 'x'.repeat(501) },
+    });
+    expect(order.customer?.address).toBeUndefined();
+  });
+
+  it('a delivery is still refused for an over-long address', async () => {
+    await seedMargherita();
+    const res = await postOrder({
+      fulfilment: 'delivery',
+      items: LINE,
+      customer: { ...PICKUP_CUSTOMER, address: 'x'.repeat(501) },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('Die Lieferadresse ist zu lang (höchstens 500 Zeichen).');
+  });
+});
+
+describe('opening hours at payment time', () => {
+  it('refuses to start payment for a delivery created before 22:00 once 22:00 has passed', async () => {
+    await seedMargherita();
+    setNowForTests(new Date('2026-09-16T19:59:00Z')); // Wednesday 21:59
+    const order = await createOrder({ fulfilment: 'delivery', items: LINE });
+    setNowForTests(new Date('2026-09-16T20:20:00Z')); // Wednesday 22:20
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/payments/checkout',
+      payload: { orderId: order.id, provider: 'mock' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain('Lieferungen nehmen wir heute nur bis 22:00 Uhr an.');
+  });
+
+  it('still starts payment for a pickup at 22:20', async () => {
+    await seedMargherita();
+    setNowForTests(new Date('2026-09-16T20:20:00Z'));
+    const order = await createOrder({ fulfilment: 'pickup', items: LINE, customer: PICKUP_CUSTOMER });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/payments/checkout',
+      payload: { orderId: order.id, provider: 'mock' },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
 describe('opening hours at order time', () => {
   it('refuses every order on the Tuesday Ruhetag, naming when to come back', async () => {
     await seedMargherita();

@@ -1,6 +1,7 @@
 import Stripe from 'stripe';
 
 import { config, stripeEnabled } from '../config.js';
+import { now } from '../lib/clock.js';
 import type { Order } from '../types.js';
 
 // One lazily-created client. Only constructed when a (test-mode) key is present.
@@ -14,6 +15,14 @@ function stripe(): Stripe {
 function apiBase(): string {
   return config.publicApiUrl.replace(/\/$/, '');
 }
+
+/**
+ * How long a hosted checkout stays payable. Stripe's default is 24 hours, which
+ * would let a session opened before closing be paid the next day. 30 minutes is
+ * Stripe's minimum: the checkout route refuses to open a session outside the
+ * hours, and this bounds how far past them one can still be paid.
+ */
+const SESSION_TTL_SECONDS = 30 * 60;
 
 /** Create a Stripe Checkout Session for an order and return its hosted URL. */
 export async function createStripeCheckout(order: Order): Promise<string> {
@@ -44,6 +53,7 @@ export async function createStripeCheckout(order: Order): Promise<string> {
     line_items: lineItems,
     client_reference_id: order.id,
     metadata: { orderId: order.id },
+    expires_at: Math.floor(now().getTime() / 1000) + SESSION_TTL_SECONDS,
     success_url: `${base}/checkout/return?order_id=${encodeURIComponent(order.id)}&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${base}/checkout/cancel?order_id=${encodeURIComponent(order.id)}`,
   });
