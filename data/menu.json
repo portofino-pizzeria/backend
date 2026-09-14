@@ -8,7 +8,8 @@
     "Hähnchenbrust, Rumpsteak and Dessert have ZERO published items: their nav pages render an empty entry-content, their WPPizza taxonomy archives return no posts, a site search for each term returns no results, and none of the three terms appears in the taxonomy sitemap. They are empty on the server, not withheld from a static fetch.",
     "German is authoritative. The site publishes NO English text for any item, category or allergen label, so nameEn/descriptionEn/labelEn are null throughout except allergen labelEn, which is taken from the site's own CSS semantic token (wppizza-allergen-<token>) and never translated by the capture.",
     "sortOrder is the position within the category AS THE SITE RENDERS IT, which is NOT numeric order: WPPizza emits Pizza as 6,5,4,3,2,1,7,8,... and Mexikanisch as 101,102,108,107,106,111,... The capture preserves what a diner sees; re-sorting by item number is a presentation choice for the consuming app, not a correction to the source.",
-    "Prices are transcribed exactly as rendered (German decimal comma) and converted to integer cents. No rounding, no inference; the word 'ab' appears only inside descriptions, never in a price."
+    "Prices are transcribed exactly as rendered (German decimal comma) and converted to integer cents. No rounding, no inference; the word 'ab' appears only inside descriptions, never in a price.",
+    "2026-09-14: category `antipasti-misto` and its two items (für 1 Person / für 2 Personen Vorspeisenteller) were REMOVED on the operator's instruction. The capture had found it as a published WPPizza taxonomy archive with no entry in the site navigation; the operator compared the site's navigation and full menu category by category (Home, Pizza, Vorspeisen, Nudeln, Frisch aus dem Ofen, Mexikanisch, Salate, Vegetarische Aufläufe, Fisch, Schweinefilet, Schnitzel, Hähnchenbrust, Rumpsteak, Getränke, Dessert, Angebote) and ruled that the menu does not carry it. Every other item, allergen code, description and price in this file was checked against that paste and matched."
   ],
   "availability": {
     "expressedPerItem": false,
@@ -195,17 +196,6 @@
       "sourceUrl": "https://portofino-essen.de/vorspeisen/",
       "provenance": "observed",
       "note": null
-    },
-    {
-      "id": "antipasti-misto",
-      "labelDe": "Antipasti Misto",
-      "labelEn": null,
-      "sortOrder": 3,
-      "itemCount": 2,
-      "captureMethod": "static-html",
-      "sourceUrl": "https://portofino-essen.de/wppizza_menu/antipasti-misto/",
-      "provenance": "observed",
-      "note": "Published category with no entry in the site navigation; reachable only through its WPPizza taxonomy archive."
     },
     {
       "id": "nudeln",
@@ -1713,58 +1703,6 @@
         "alsoListedIn": [
           "mexikanisch"
         ]
-      }
-    },
-    {
-      "id": "antipasti-misto-fuer-1-person-vorspeisenteller",
-      "number": null,
-      "categoryId": "antipasti-misto",
-      "name": "für 1 Person Vorspeisenteller",
-      "description": "mit versch. Gemüse der Saison und Parmaschinken",
-      "nameEn": null,
-      "descriptionEn": null,
-      "allergenCodes": [],
-      "available": true,
-      "sortOrder": 1,
-      "provenance": "observed",
-      "variants": [
-        {
-          "id": "antipasti-misto-fuer-1-person-vorspeisenteller-normal",
-          "label": "normal",
-          "sortOrder": 1,
-          "priceCents": 990
-        }
-      ],
-      "source": {
-        "postId": 495,
-        "renderedTitle": "• für 1 Person Vorspeisenteller",
-        "alsoListedIn": []
-      }
-    },
-    {
-      "id": "antipasti-misto-fuer-2-personen-vorspeisenteller",
-      "number": null,
-      "categoryId": "antipasti-misto",
-      "name": "für 2 Personen Vorspeisenteller",
-      "description": "mit versch. Gemüse der Saison und Parmaschinken",
-      "nameEn": null,
-      "descriptionEn": null,
-      "allergenCodes": [],
-      "available": true,
-      "sortOrder": 2,
-      "provenance": "observed",
-      "variants": [
-        {
-          "id": "antipasti-misto-fuer-2-personen-vorspeisenteller-normal",
-          "label": "normal",
-          "sortOrder": 1,
-          "priceCents": 1590
-        }
-      ],
-      "source": {
-        "postId": 496,
-        "renderedTitle": "• für 2 Personen Vorspeisenteller",
-        "alsoListedIn": []
       }
     },
     {
