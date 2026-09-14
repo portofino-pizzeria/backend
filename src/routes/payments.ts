@@ -12,19 +12,46 @@ const checkoutSchema = z.object({
   provider: z.enum(['stripe', 'paypal', 'mock']),
 });
 
-// A small self-contained result page shown inside the app's in-app browser
-// after (mock or real) checkout. Links back to the web app if configured.
+/** The order ids the API issues: `randomUUID()` in order-service. */
+const ORDER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Where "Zu deiner Bestellung" points, or null when there is no safe answer.
+ * The id comes from the query string, so it must match the shape the service
+ * issues before it may become a link — never loosen the pattern to "anything".
+ */
+function orderLink(orderId: string | undefined): string | null {
+  const base = config.publicWebUrl.replace(/\/+$/, '');
+  if (!base || !orderId || !ORDER_ID.test(orderId)) return null;
+  return `${base}/order/${encodeURIComponent(orderId)}`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// A small self-contained result page shown after (mock or real) checkout — in
+// the app's in-app browser, the web popup, or, on the web's same-tab path, the
+// app's own tab. Its one link leads back to the order it concerns.
 function resultPage(opts: {
   emoji: string;
   title: string;
   sub: string;
+  orderId?: string;
 }): string {
-  const back = config.publicWebUrl
-    ? `<a class="btn" href="${config.publicWebUrl}">Return to Portofino</a>`
-    : `<p class="hint">You can close this window and return to the app.</p>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+  const link = orderLink(opts.orderId);
+  const back = link
+    ? `<a class="btn" href="${escapeHtml(link)}">Zu deiner Bestellung</a>
+  <p class="hint">Du kannst dieses Fenster auch schließen – deine Bestellung aktualisiert sich von selbst.</p>`
+    : `<p class="hint">Du kannst dieses Fenster jetzt schließen.</p>`;
+  return `<!doctype html><html lang="de"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>${opts.title}</title>
+<title>${escapeHtml(opts.title)}</title>
 <style>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -39,10 +66,11 @@ function resultPage(opts: {
     padding: 12px 20px; border-radius: 12px; font-weight: 600; }
   @media (prefers-color-scheme: dark) { .btn { background: #faf7f2; color: #1c1917; } }
   .hint { font-size: 14px; }
+  .btn + .hint { margin-top: 16px; }
 </style></head><body><div class="card">
-  <div class="emoji">${opts.emoji}</div>
-  <h1>${opts.title}</h1>
-  <p>${opts.sub}</p>
+  <div class="emoji">${escapeHtml(opts.emoji)}</div>
+  <h1>${escapeHtml(opts.title)}</h1>
+  <p>${escapeHtml(opts.sub)}</p>
   ${back}
 </div></body></html>`;
 }
@@ -79,8 +107,9 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
         .send(
           resultPage({
             emoji: '✅',
-            title: 'Payment complete',
-            sub: 'This was a test payment — no money changed hands. Your order is confirmed.',
+            title: 'Testzahlung abgeschlossen',
+            sub: 'Es wurde kein Geld bewegt. Deine Bestellung ist bestätigt und geht in die Küche.',
+            orderId: id,
           }),
         );
     },
@@ -104,27 +133,36 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
         paid
           ? resultPage({
               emoji: '✅',
-              title: 'Payment received',
-              sub: 'Thank you! Your order is confirmed and heading to the kitchen.',
+              // The order screen's own words for `paid` (mobile
+              // src/app/order/[id].tsx STATUS_COPY) — keep them identical.
+              title: 'Zahlung erhalten',
+              sub: 'Deine Bestellung ist bestätigt und geht in die Küche.',
+              orderId,
             })
           : resultPage({
               emoji: '⏳',
-              title: 'Finishing up',
-              sub: 'We’re confirming your payment. Head back to the app — your order will update automatically.',
+              title: 'Zahlung wird bestätigt',
+              sub: 'Wir bestätigen gerade deine Zahlung. Deine Bestellung aktualisiert sich von selbst.',
+              orderId,
             }),
       );
     },
   );
 
-  // Stripe cancel.
-  app.get('/checkout/cancel', async (_req, reply) =>
-    reply.type('text/html').send(
-      resultPage({
-        emoji: '↩️',
-        title: 'Checkout cancelled',
-        sub: 'No payment was taken. You can return to the app and try again.',
-      }),
-    ),
+  // Stripe cancel. Stripe's cancel_url carries the order id; a missing or
+  // malformed one renders the page without a link — cancel never fails. The
+  // copy promises no retry: the order screen offers no way to pay again yet.
+  app.get<{ Querystring: { order_id?: string } }>(
+    '/checkout/cancel',
+    async (req, reply) =>
+      reply.type('text/html').send(
+        resultPage({
+          emoji: '↩️',
+          title: 'Bezahlung abgebrochen',
+          sub: 'Es wurde nichts abgebucht. Deine Bestellung ist angelegt, aber noch nicht bezahlt, und wird erst nach der Bezahlung zubereitet.',
+          orderId: req.query.order_id,
+        }),
+      ),
   );
 
   // --- Stripe webhook (production-grade confirmation) ----------------------

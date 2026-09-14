@@ -36,8 +36,9 @@ export const config = {
   // back to localhost for dev.
   publicApiUrl: env('PUBLIC_API_URL', `http://localhost:${port}`),
 
-  // Public URL of the customer web app, used as the "back to app" target after
-  // hosted checkout. Empty falls back to a built-in confirmation page.
+  // Public URL of the customer web app: the base of the "Zu deiner Bestellung"
+  // link (`<base>/order/<id>`) on the payment result pages. Empty renders those
+  // pages with no link, only a hint to close the window.
   publicWebUrl: env('PUBLIC_WEB_URL', ''),
 
   // CORS allow-list. Empty array = allow all (fine for local + a private
