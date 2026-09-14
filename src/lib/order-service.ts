@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { desc, eq, inArray } from 'drizzle-orm';
 
 import { config } from '../config.js';
+import { now } from './clock.js';
+import { refusalFor, shopStatus } from './shop.js';
 import { db } from '../db/client.js';
 import {
   menuItemVariants,
@@ -14,6 +16,7 @@ import {
 } from '../db/schema.js';
 import type {
   CustomerInfo,
+  Fulfilment,
   Order,
   OrderStatus,
   PaymentProvider,
@@ -42,6 +45,7 @@ export function serializeOrder(row: OrderRow, lines: OrderLineRow[]): Order {
     deliveryFee: row.deliveryFee,
     total: row.total,
     currency: row.currency,
+    fulfilment: row.fulfilment === 'pickup' ? 'pickup' : 'delivery',
     status: row.status as OrderStatus,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -70,12 +74,21 @@ export async function getOrder(id: string): Promise<Order | null> {
 
 export interface CreateOrderInput {
   items: { menuItemId: string; variantId: string; quantity: number }[];
+  /** Defaults to delivery, the only kind of order before pickup existed. */
+  fulfilment?: Fulfilment;
   customer?: CustomerInfo;
 }
 
 export async function createOrder(input: CreateOrderInput): Promise<Order> {
   const items = input.items ?? [];
   if (items.length === 0) throw badRequest('Order must contain at least one item.');
+  const fulfilment: Fulfilment = input.fulfilment ?? 'delivery';
+
+  // Opening hours first: a closed kitchen refuses every order, whatever is in
+  // it. A delivery after DELIVERY_UNTIL is refused with the pickup alternative
+  // named, because the shop is still open for collection.
+  const refusal = refusalFor(fulfilment, shopStatus(now()));
+  if (refusal) throw badRequest(refusal);
 
   for (const it of items) {
     if (!it.menuItemId) throw badRequest('Each item needs a menuItemId.');
@@ -113,6 +126,9 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
     if (v.itemId !== m.id) {
       throw badRequest(`Variant ${v.id} does not belong to ${m.name}.`);
     }
+    if (m.pickupOnly && fulfilment !== 'pickup') {
+      throw badRequest(`${m.name} gibt es nur für Selbstabholer. Bitte Abholung wählen.`);
+    }
     return {
       menuItemId: m.id,
       variantId: v.id,
@@ -124,7 +140,7 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
   });
 
   const subtotal = lines.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
-  const deliveryFee = config.deliveryFeeCents;
+  const deliveryFee = fulfilment === 'delivery' ? config.deliveryFeeCents : 0;
   const total = subtotal + deliveryFee;
 
   const id = randomUUID();
@@ -138,9 +154,12 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
       total,
       currency: config.currency,
       status: 'pending_payment',
+      fulfilment,
       customerName: c.name ?? null,
       customerPhone: c.phone ?? null,
-      customerAddress: c.address ?? null,
+      // A pickup stores no address even if a client sent one: the kitchen card
+      // must not show a delivery address for food nobody delivers.
+      customerAddress: fulfilment === 'delivery' ? (c.address ?? null) : null,
       customerNotes: c.notes ?? null,
     });
     await tx.insert(orderLines).values(

@@ -69,12 +69,19 @@ const createOrderSchema = z.object({
       }),
     )
     .min(1),
-  // Every order the app takes is a DELIVERY: checkout is headed "Lieferdaten"
-  // and always charges the delivery fee, and there is no pickup mode anywhere.
-  // So an order without a name, a phone number and an address is one the
-  // kitchen cannot deliver and cannot even call about. These fields used to be
-  // optional, and an order with all three blank was accepted, confirmed to the
-  // diner as "Zahlung erhalten", and sent to the kitchen as a blank card.
+  // Lieferung or Abholung, as portofino-essen.de offers. Absent means delivery,
+  // which is what every order was before pickup existed — so an older client
+  // that sends no `fulfilment` keeps its meaning.
+  fulfilment: z
+    .enum(['delivery', 'pickup'], {
+      errorMap: () => ({ message: 'Bitte Lieferung oder Abholung wählen.' }),
+    })
+    .default('delivery'),
+  // A name and a phone number are required for BOTH: the kitchen calls about
+  // either kind of order. These fields used to be optional, and an order with
+  // everything blank was accepted, confirmed to the diner as "Zahlung
+  // erhalten", and sent to the kitchen as a blank card. The address is required
+  // for a delivery only — see the refinement below.
   //
   // Messages are German because the mobile checkout shows this text to the
   // diner verbatim.
@@ -95,11 +102,13 @@ const createOrderSchema = z.object({
         (value) => (value.match(/\d/g) ?? []).length >= MIN_PHONE_DIGITS,
         'Bitte eine gültige Telefonnummer angeben.',
       ),
-      address: requiredText(
-        500,
-        'Bitte eine Lieferadresse angeben.',
-        'Die Lieferadresse ist zu lang (höchstens 500 Zeichen).',
-      ).refine((value) => READABLE.test(value), 'Bitte eine Lieferadresse angeben.'),
+      // Optional at this layer; required for a delivery by the refinement on
+      // the whole order. An empty or invisible-only address counts as absent.
+      address: z
+        .string({ invalid_type_error: 'Bitte eine Lieferadresse angeben.' })
+        .transform((value) => value.replace(INVISIBLE, '').trim())
+        .pipe(z.string().max(500, 'Die Lieferadresse ist zu lang (höchstens 500 Zeichen).'))
+        .optional(),
       notes: z.string().max(1000).optional(),
     },
     {
@@ -108,6 +117,15 @@ const createOrderSchema = z.object({
       invalid_type_error: 'Bitte Name, Telefonnummer und Lieferadresse angeben.',
     },
   ),
+}).superRefine((order, ctx) => {
+  const address = order.customer.address ?? '';
+  if (order.fulfilment === 'delivery' && !READABLE.test(address)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['customer', 'address'],
+      message: 'Bitte eine Lieferadresse angeben.',
+    });
+  }
 });
 
 export async function orderRoutes(app: FastifyInstance): Promise<void> {

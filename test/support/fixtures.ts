@@ -119,6 +119,8 @@ export interface SeedItemInput {
   allergenCodes?: string[];
   imageUrl?: string | null;
   available?: boolean;
+  /** Sold only for collection ("für Selbstabholer"). */
+  pickupOnly?: boolean;
   sortOrder?: number;
   /**
    * Omit for one default variant. Pass `[]` for an item with no variants at
@@ -154,6 +156,7 @@ export async function seedItem(
       allergenCodes: input.allergenCodes ?? [],
       imageUrl: input.imageUrl ?? null,
       available: input.available ?? true,
+      pickupOnly: input.pickupOnly ?? false,
       sortOrder: input.sortOrder ?? 0,
     })
     .returning();

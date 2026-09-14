@@ -158,6 +158,7 @@ export async function seedMenu(): Promise<number> {
     }
 
     const menuOrder = presentationOrder(dataset.items);
+    const pickupOnly = new Set(dataset.pickup?.pickupOnlyOffers ?? []);
 
     if (dataset.items.length > 0) {
       await tx.insert(menuItems).values(
@@ -175,6 +176,7 @@ export async function seedMenu(): Promise<number> {
           allergenCodes: item.allergenCodes, // Verbatim — never filtered.
           imageUrl: null, // Not in the capture; the owner adds these later.
           available: item.available,
+          pickupOnly: pickupOnly.has(item.id),
           sortOrder: menuOrder.get(item.id) ?? item.sortOrder,
         })),
       );

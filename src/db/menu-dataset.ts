@@ -87,6 +87,12 @@ const itemSchema = z
 
 const datasetSchema = z
   .object({
+    // Offers sold only for collection. Optional so a capture that predates the
+    // field still loads; every id named here must exist (validateSemantics).
+    pickup: z
+      .object({ pickupOnlyOffers: z.array(z.string().min(1)).default([]) })
+      .passthrough()
+      .optional(),
     allergenLegend: z.array(legendEntrySchema),
     categories: z.array(categorySchema),
     items: z.array(itemSchema),
@@ -162,6 +168,12 @@ function validateSemantics(dataset: MenuDataset): void {
             `negative priceCents: ${variant.priceCents}.`,
         );
       }
+    }
+  }
+
+  for (const id of dataset.pickup?.pickupOnlyOffers ?? []) {
+    if (!itemIds.has(id)) {
+      problems.push(`pickup.pickupOnlyOffers names unknown item "${id}".`);
     }
   }
 

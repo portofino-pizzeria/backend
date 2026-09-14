@@ -101,6 +101,7 @@ export async function loadMenu(
     variants: variantsByItem.get(r.id) ?? [],
     allergenCodes: r.allergenCodes,
     ...(r.imageUrl ? { imageUrl: r.imageUrl } : {}),
+    ...(r.pickupOnly ? { pickupOnly: true } : {}),
     available: r.available,
     sortOrder: r.sortOrder,
   }));

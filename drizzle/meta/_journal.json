@@ -22,6 +22,13 @@
       "when": 1787968035210,
       "tag": "0002_menu_variants_categories_allergens",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789389158301,
+      "tag": "0003_fulfilment_and_pickup_only",
+      "breakpoints": true
     }
   ]
 }

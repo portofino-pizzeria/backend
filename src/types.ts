@@ -42,6 +42,8 @@ export interface MenuItem {
    *  here has an entry there, possibly an unresolved one. */
   allergenCodes: string[];
   imageUrl?: string;
+  /** Sold only to diners who collect ("für Selbstabholer"). Absent = false. */
+  pickupOnly?: boolean;
 }
 
 /** A legend entry for one allergen code. `resolved: false` means Portofino
@@ -80,6 +82,9 @@ export interface AdminMenu {
 
 export type PaymentProvider = 'stripe' | 'paypal' | 'mock';
 
+/** How the diner gets the food. A pickup pays no delivery fee and gives no address. */
+export type Fulfilment = 'delivery' | 'pickup';
+
 export type OrderStatus =
   | 'pending_payment'
   | 'paid'
@@ -112,6 +117,7 @@ export interface Order {
   deliveryFee: number;
   total: number;
   currency: string;
+  fulfilment: Fulfilment;
   status: OrderStatus;
   customer?: CustomerInfo;
   payment?: { provider: PaymentProvider; reference?: string; paidAt?: string };

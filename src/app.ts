@@ -18,6 +18,7 @@ import { kitchenRoutes } from './routes/kitchen.js';
 import { menuRoutes } from './routes/menu.js';
 import { orderRoutes } from './routes/orders.js';
 import { paymentRoutes } from './routes/payments.js';
+import { shopRoutes } from './routes/shop.js';
 
 export interface BuildAppOptions {
   /** Request logging. On in the server process, off under test. */
@@ -60,6 +61,7 @@ export async function buildApp(
   }));
 
   await app.register(menuRoutes);
+  await app.register(shopRoutes);
   await app.register(orderRoutes);
   await app.register(paymentRoutes);
   await app.register(kitchenRoutes);

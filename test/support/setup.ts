@@ -9,6 +9,7 @@ import { afterAll, beforeEach } from 'vitest';
 
 import { config } from '../../src/config.js';
 import { sql } from '../../src/db/client.js';
+import { setNowForTests } from '../../src/lib/clock.js';
 import { resolveTestDatabaseUrl } from './database';
 import { resetFixtureCounters } from './fixtures';
 
@@ -52,9 +53,17 @@ async function truncateAll(): Promise<void> {
   if (truncateStatement) await sql.unsafe(truncateStatement);
 }
 
+/**
+ * Where every test is, in time, unless it moves the clock itself: a Wednesday
+ * at 18:00 in Essen, when both delivery and pickup orders are taken. Without a
+ * pinned clock the order tests would pass or fail by the time of day they ran.
+ */
+export const OPEN_FOR_EVERYTHING = new Date('2026-09-16T16:00:00Z');
+
 beforeEach(async () => {
   await truncateAll();
   resetFixtureCounters();
+  setNowForTests(OPEN_FOR_EVERYTHING);
 });
 
 afterAll(async () => {

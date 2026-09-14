@@ -67,6 +67,10 @@ export const menuItems = pgTable('menu_items', {
     .default(sql`'{}'::text[]`),
   imageUrl: text('image_url'),
   available: boolean('available').notNull().default(true),
+  // Offers the restaurant sells only to diners who collect ("für
+  // Selbstabholer"): an order containing one must be a pickup. Seeded from
+  // `data/menu.json` `pickup.pickupOnlyOffers`.
+  pickupOnly: boolean('pickup_only').notNull().default(false),
   sortOrder: integer('sort_order').notNull().default(0),
 });
 
@@ -102,6 +106,9 @@ export const orders = pgTable('orders', {
   total: integer('total').notNull(),
   currency: text('currency').notNull().default('EUR'),
   status: text('status').notNull().default('pending_payment'), // OrderStatus
+  // 'delivery' | 'pickup'. Every order before pickup existed was a delivery,
+  // so that is the default the migration backfills.
+  fulfilment: text('fulfilment').notNull().default('delivery'),
 
   customerName: text('customer_name'),
   customerPhone: text('customer_phone'),
