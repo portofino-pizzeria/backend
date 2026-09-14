@@ -130,6 +130,26 @@ describe('GET /checkout/cancel', () => {
     expect(res.body).not.toContain(hostile);
     expect(res.body).not.toContain('<a');
   });
+
+  it('offers no link for an id that only starts like one', async () => {
+    const order = await placeOrder();
+
+    for (const nearMiss of [`${order.id}x`, `${order.id}\n`, `x${order.id}`]) {
+      const res = await withConfig({ publicWebUrl: WEB }, () =>
+        get(`/checkout/cancel?order_id=${encodeURIComponent(nearMiss)}`),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain('<a');
+    }
+  });
+});
+
+describe('missing parameters', () => {
+  it('still answers 400 on /checkout/mock and /checkout/return', async () => {
+    expect((await get('/checkout/mock')).statusCode).toBe(400);
+    expect((await get('/checkout/return?session_id=cs_test_x')).statusCode).toBe(400);
+  });
 });
 
 describe('GET /checkout/return', () => {
