@@ -57,9 +57,10 @@ vitest run
       └─ test/support/setup.ts    (vitest `setupFiles`)
            ├─ import './env'      ← redirects src/config.ts, MUST be first
            └─ beforeEach: TRUNCATE every public table, RESTART IDENTITY
+                          then seedShop()  ← the restaurant's own facts
 ```
 
-Three things are worth knowing:
+Four things are worth knowing:
 
 1. **Import order is load-bearing.** `src/config.ts` reads
    `process.env.DATABASE_URL` once, at module evaluation, and
@@ -75,6 +76,14 @@ Three things are worth knowing:
    edit the harness.
 3. **Test files do not run in parallel** (`fileParallelism: false` in
    `vitest.config.ts`) — they share one database and truncate between tests.
+4. **The shop is re-seeded after every truncate.** Opening hours, the address,
+   the phone number and the two pre-filled special days are rows now
+   (`shop_profile`, `shop_weekly_hours`, `shop_special_days`), and the truncate
+   above removes them — so `beforeEach` calls the same `seedShop()`
+   (`src/db/seed-shop.ts`) a boot calls. Every test therefore starts from the
+   shop a freshly-seeded production database has, and `GET /api/shop` answers
+   instead of 503. A test that needs different hours edits those rows (see
+   `test/shop.test.ts`); one that needs none deletes them.
 
 Migrations are re-applied from an empty schema on every run, so "a clean,
 migrated schema" is literally true rather than "whatever the last run left
@@ -177,9 +186,11 @@ instance with logging off. Close it in `afterAll`.
 | `test/harness.test.ts` | The harness itself: it is pointed at a test database, it refuses a non-test one, tests are isolated from each other, fixture defaults behave |
 | `test/menu.test.ts` | `GET /api/menu` — payload shape, category/item/variant ordering, availability filtering, items with zero variants, and allergen resolution (a code with no legend row comes back `resolved: false` / `unbekannt`, never dropped) |
 | `test/orders.test.ts` | `POST /api/orders` — per-variant server-side pricing, client-supplied prices ignored, every refusal path (unknown variant, variant of another item, missing variant at the zod door, unknown item, unavailable item, empty order, bad quantity, no partial write), the required contact details (missing, whitespace-only, zero-width-only, wrong-typed, over-long and too-few-digit name/phone/address, each answered with its exact German message, and stored cleaned and trimmed), and that order lines are snapshots that survive a later menu edit or deletion |
-| `test/health.test.ts` | `GET /api/health` — the deploy workflow's proof surface: `commit` (present, degrades to `"unknown"` without the build arg) and `kitchen` (`token` / `auth-disabled` / `unconfigured`, and that it never carries the token itself) |
+| `test/health.test.ts` | `GET /api/health` — the deploy workflow's proof surface: `commit` (present, degrades to `"unknown"` without the build arg), `kitchen` (`token` / `auth-disabled` / `unconfigured`, and that it never carries the token itself) and `legal` (all three states, that it still answers 200 when the shop rules cannot be read at all, and that a failed read keeps the last known answer) |
+| `test/shop.test.ts` | Opening hours: Berlin wall time, the NRW public holidays, the window of one day, the status now, the printed table (`displayHours`, which must print exactly what the old hand-written constant printed), the two pre-filled D4 rows, and `GET /api/shop` — including a full-body literal captured from the behaviour at `bdaaeac`, so moving the facts into the database changed nothing a diner reads. Plus the proof that the rows really decide: a dated special day opens a Tuesday, moving the Ruhetag moves the refusal, and a shop with no profile row refuses every order with 503 |
 | `test/kitchen-auth.test.ts` | The kitchen guard fails CLOSED: no token and no opt-out refuses with no order data in the body; the explicit `KITCHEN_AUTH_DISABLED` opt-out serves and is parsed as exactly `1` (a fresh import of `config.ts` per value — `true`, `yes`, `0`, empty all leave the guard armed); a configured token is required even with the opt-out set, and a wrong, same-length, prefix or empty bearer is refused |
 | `test/admin-menu.test.ts` | `/api/admin/menu/*` — the owner's editor. The fail-closed credential (D5), the editor's own read, the **four safety properties** below, that editing the menu never rewrites order history, and the everyday item / category / allergen-legend edits |
+| `test/admin-shop.test.ts` | `/api/admin/shop/*` — the owner's restaurant editor. The fail-closed credential (shared with the menu editor), and one `describe` per safety rule of decision D5: each part saved whole (all seven weekdays, a 62-day Urlaub in one transaction, a batch rejected as a whole), impossible states refused, closing the whole week confirmed, the phone number normalised on the server, a stale `version` answered with 409, every write undoable (and a second undo a redo), and a preview that writes nothing and shows exactly the status the public route will serve. Plus the Impressum: `confirmed: true` required, `email` written only here, and the register fields omitted from `GET /api/shop` while unset |
 
 ## The editor's four safety properties
 

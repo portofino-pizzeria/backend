@@ -13,7 +13,9 @@ import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 
 import { config, kitchenAuthMode, stripeEnabled } from './config.js';
 import { HttpError } from './lib/http-errors.js';
+import { readLegalStatus } from './lib/legal-status.js';
 import { adminMenuRoutes } from './routes/admin-menu.js';
+import { adminShopRoutes } from './routes/admin-shop.js';
 import { kitchenRoutes } from './routes/kitchen.js';
 import { menuRoutes } from './routes/menu.js';
 import { orderRoutes } from './routes/orders.js';
@@ -53,12 +55,24 @@ export async function buildApp(
   // see `kitchenAuthMode`) so the deploy can refuse to call a deployment
   // verified while `/api/kitchen/*` is either open to the internet or dead.
   // It reveals nothing a single unauthenticated request would not.
-  app.get('/api/health', async () => ({
-    status: 'ok',
-    commit: config.commit,
-    stripe: stripeEnabled ? 'live-keys' : 'mock',
-    kitchen: kitchenAuthMode(),
-  }));
+  // `legal` is the same idea again, for the law rather than for code or
+  // configuration: a German business app must carry a complete Impressum
+  // (§ 5 DDG), and the facts are the owner's to supply. It is served from an
+  // in-process cache and NEVER from a query — this route is App Runner's own
+  // health check and answers before the database is reachable (see
+  // lib/legal-status.ts). `legalMissing` names the gaps while there are any,
+  // so the deploy can warn with something actionable in it.
+  app.get('/api/health', async () => {
+    const legal = readLegalStatus();
+    return {
+      status: 'ok',
+      commit: config.commit,
+      stripe: stripeEnabled ? 'live-keys' : 'mock',
+      kitchen: kitchenAuthMode(),
+      legal: legal.legal,
+      ...(legal.legal === 'incomplete' ? { legalMissing: legal.missing } : {}),
+    };
+  });
 
   await app.register(menuRoutes);
   await app.register(shopRoutes);
@@ -66,6 +80,7 @@ export async function buildApp(
   await app.register(paymentRoutes);
   await app.register(kitchenRoutes);
   await app.register(adminMenuRoutes);
+  await app.register(adminShopRoutes);
 
   return app;
 }
