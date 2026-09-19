@@ -1,35 +1,17 @@
-// The shop itself: where it is, how to reach it, and when it takes orders.
+// When the shop takes orders, and what a diner is told when it does not.
 //
-// SOURCE: the footer of https://portofino-essen.de/ as the operator copied it on
-// 2026-09-14:
-//
-//   Adresse         Hauptstr. 108, 45219 Essen
-//   Öffnungszeiten  Dienstag Ruhetag
-//                   Mo – Fr: 12.00 – 22.30 Uhr
-//                   Sa, So u. Feiertage: 13.00 – 22:30 Uhr
-//                   Lieferzeit bis 22.00 Uhr
-//   Telefon         02054 – 15 88 3
-//
-// That footer is the authority here. Two older copies disagree with it and are
-// NOT used: the WPPizza widget captured into `data/menu.json` `openingHours`
-// (closing at 22:00) and `audience_profile/owner-operator` (the same). The
-// footer separates the shop closing (22:30) from the last delivery (22:00),
-// and the widget does not — which is exactly the difference pickup exists for.
+// Everything here is PURE: each function takes the restaurant's rules
+// (`ShopRules`, loaded from the database by `shop-rules.ts`) as a required
+// argument. The rules used to be constants in this file; they are rows the
+// owner edits now, and a default argument here would quietly become a second
+// source of truth the first time a closing time changed. The defaults live in
+// `shop-defaults.ts` and are only ever used to seed an empty database.
 //
 // Everything is computed in Europe/Berlin wall time. The server runs in UTC,
 // and a diner at 21:30 in Essen must never be told the shop closed at 20:30.
 
-/** Where and how. The phone is kept exactly as the shop prints it. */
-export const SHOP = {
-  name: 'Portofino Pizzeria',
-  street: 'Hauptstr. 108',
-  postalCode: '45219',
-  city: 'Essen',
-  phoneDisplay: '02054 – 15 88 3',
-  /** The same number, dialable. 02054 is Essen-Kettwig's area code. */
-  phoneE164: '+49205415883',
-  timeZone: 'Europe/Berlin',
-} as const;
+import type { ShopRules, SpecialDayRule } from './shop-rules.js';
+import { SHOP_TIME_ZONE } from './shop-rules.js';
 
 /** A service window on one day, as `HH:MM` wall-clock strings. */
 export interface Window {
@@ -38,33 +20,6 @@ export interface Window {
 }
 
 export type Fulfilment = 'delivery' | 'pickup';
-
-/** Opening hours by ISO weekday (1 = Monday … 7 = Sunday). `null` = closed. */
-const WEEKLY: Record<number, Window | null> = {
-  1: { open: '12:00', close: '22:30' },
-  2: null, // Dienstag Ruhetag
-  3: { open: '12:00', close: '22:30' },
-  4: { open: '12:00', close: '22:30' },
-  5: { open: '12:00', close: '22:30' },
-  6: { open: '13:00', close: '22:30' },
-  7: { open: '13:00', close: '22:30' },
-};
-
-/** "Sa, So u. Feiertage" — a public holiday takes the weekend hours. */
-const HOLIDAY_WINDOW: Window = { open: '13:00', close: '22:30' };
-
-/** "Lieferzeit bis 22.00 Uhr" — the last moment a delivery order is taken. */
-export const DELIVERY_UNTIL = '22:00';
-
-/**
- * The rule the footer does not settle, decided on the side that cannot leave a
- * diner waiting for food nobody cooks: a public holiday that falls on a TUESDAY
- * stays a Ruhetag. "Dienstag Ruhetag" is stated without exception, and taking
- * an order for a closed kitchen is the failure the owner cannot absorb; turning
- * a diner away on a day the shop happens to open costs one order. Owed back to
- * the owner as a question.
- */
-const RUHETAG_BEATS_HOLIDAY = true;
 
 const WEEKDAY_DE = ['', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
 
@@ -83,7 +38,7 @@ export interface LocalDateTime {
 }
 
 const berlinParts = new Intl.DateTimeFormat('en-GB', {
-  timeZone: SHOP.timeZone,
+  timeZone: SHOP_TIME_ZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -113,7 +68,7 @@ export function berlinTime(instant: Date): LocalDateTime {
   };
 }
 
-function toMinutes(hhmm: string): number {
+export function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
   return (h ?? 0) * 60 + (m ?? 0);
 }
@@ -139,19 +94,19 @@ function easterSunday(year: number): { month: number; day: number } {
   return { month, day };
 }
 
-function isoDate(year: number, month: number, day: number): string {
+export function isoDate(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
-function shiftDate(year: number, month: number, day: number, days: number): string {
+export function shiftDate(year: number, month: number, day: number, days: number): string {
   const t = new Date(Date.UTC(year, month - 1, day + days));
   return isoDate(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
 }
 
 /**
  * The statutory public holidays in NRW for a year, `YYYY-MM-DD` -> name.
- * Heiligabend and Silvester are NOT public holidays and are not listed; if the
- * shop keeps special hours on them, that is not something the footer says.
+ * Heiligabend and Silvester are NOT public holidays and are not listed; the
+ * shop's hours on those two days are special-day rows instead (decision D4).
  */
 export function nrwHolidays(year: number): Map<string, string> {
   const easter = easterSunday(year);
@@ -178,26 +133,106 @@ export interface DayHours {
   weekday: number;
   /** Set when the day is a public holiday. */
   holiday?: string;
+  /** The note of the special day that decided this date, when one did. */
+  special?: string;
   /** Pickup and the shop: open to close. `null` when closed all day. */
   pickup: Window | null;
-  /** Delivery: open to DELIVERY_UNTIL. `null` when closed all day. */
+  /** Delivery: open to the day's delivery close. `null` when no delivery. */
   delivery: Window | null;
 }
 
-export function hoursOn(year: number, month: number, day: number): DayHours {
+/** The `MM-DD` key a recurring special day is matched by. */
+function monthDayOf(month: number, day: number): string {
+  return `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * The hours of one calendar date, in this order of precedence:
+ *
+ *   1. a DATED special day — the owner typed this exact date, so it wins
+ *      outright, Ruhetag included;
+ *   2. a RECURRING special day (Heiligabend, Silvester);
+ *   3. a public holiday, which takes the holiday window;
+ *   4. the weekday's own row.
+ *
+ * "Ruhetag" means a weekday whose weekly row is closed — not Tuesday. While
+ * `ruhetagBeatsHoliday` is set, neither a public holiday nor a recurring
+ * special day opens a Ruhetag; only a dated row, which names that one date,
+ * can. One setting governs both, for the reason decision D1 gives for
+ * holidays: nobody may be told to collect food from a kitchen with no cook in
+ * it.
+ */
+export function hoursOn(
+  rules: ShopRules,
+  year: number,
+  month: number,
+  day: number,
+): DayHours {
   const date = isoDate(year, month, day);
   const weekday = ((new Date(Date.UTC(year, month - 1, day)).getUTCDay() + 6) % 7) + 1;
   const holiday = nrwHolidays(year).get(date);
 
-  let window = WEEKLY[weekday] ?? null;
-  if (holiday && !(RUHETAG_BEATS_HOLIDAY && weekday === 2)) window = HOLIDAY_WINDOW;
+  const weeklyWindow = rules.weekly[weekday] ?? null;
+  const isRuhetag = weeklyWindow === null;
+  const ruhetagWins = rules.ruhetagBeatsHoliday && isRuhetag;
 
-  const delivery =
-    window && toMinutes(DELIVERY_UNTIL) > toMinutes(window.open)
-      ? { open: window.open, close: DELIVERY_UNTIL }
-      : null;
+  const dated = rules.specialDays.find((s) => s.date === date);
+  const recurring = rules.specialDays.find((s) => s.monthDay === monthDayOf(month, day));
+  const special = dated ?? (ruhetagWins ? undefined : recurring);
 
-  return { date, weekday, ...(holiday ? { holiday } : {}), pickup: window, delivery };
+  let window: Window | null = weeklyWindow;
+  let deliveryUntil = rules.deliveryUntil;
+  let note: string | undefined;
+
+  if (special) {
+    note = special.note || undefined;
+    window = resolveSpecialWindow(special, weeklyWindow);
+    if (special.deliveryUntil) deliveryUntil = special.deliveryUntil;
+  } else if (holiday && !ruhetagWins) {
+    window = rules.holiday;
+  }
+
+  // A window that closes at or before it opens is not a short day, it is a
+  // closed one — and saying "12:00 – 12:00 Uhr" to a diner would be worse than
+  // saying "geschlossen".
+  if (window && toMinutes(window.close) <= toMinutes(window.open)) window = null;
+
+  // The delivery cut-off never outlives the shop's own closing time: the
+  // kitchen is empty after it, whatever the profile-wide value says.
+  const delivery = deliveryWindow(window, deliveryUntil);
+
+  return {
+    date,
+    weekday,
+    ...(holiday ? { holiday } : {}),
+    ...(note ? { special: note } : {}),
+    pickup: window,
+    delivery,
+  };
+}
+
+/**
+ * The window a special day resolves to. `open === null` means "the weekday's
+ * normal opening" (D4) — and when that weekday is closed there is no opening
+ * to inherit, so the day stays closed.
+ */
+function resolveSpecialWindow(
+  special: SpecialDayRule,
+  weeklyWindow: Window | null,
+): Window | null {
+  if (special.closed || !special.close) return null;
+  const open = special.open ?? weeklyWindow?.open ?? null;
+  if (!open) return null;
+  return { open, close: special.close };
+}
+
+function deliveryWindow(window: Window | null, deliveryUntil: string): Window | null {
+  if (!window) return null;
+  const close =
+    toMinutes(deliveryUntil) < toMinutes(window.close) ? deliveryUntil : window.close;
+  // A cut-off at or before the opening means there is no delivery that day —
+  // a state the editor allows on purpose ("Abholung only" on a short day).
+  return toMinutes(close) > toMinutes(window.open) ? { open: window.open, close } : null;
 }
 
 // --- Status now -------------------------------------------------------------
@@ -219,8 +254,8 @@ export interface ShopStatus {
   delivery: ModeStatus;
 }
 
-function modeStatus(local: LocalDateTime, mode: Fulfilment): ModeStatus {
-  const today = hoursOn(local.year, local.month, local.day);
+function modeStatus(rules: ShopRules, local: LocalDateTime, mode: Fulfilment): ModeStatus {
+  const today = hoursOn(rules, local.year, local.month, local.day);
   const window = today[mode];
   if (window && local.minutes >= toMinutes(window.open) && local.minutes < toMinutes(window.close)) {
     return { available: true, until: window.close };
@@ -228,10 +263,10 @@ function modeStatus(local: LocalDateTime, mode: Fulfilment): ModeStatus {
   // The next window that starts after now: later today, or on a following day.
   for (let offset = 0; offset <= 14; offset += 1) {
     const [y, m, d] = shiftDate(local.year, local.month, local.day, offset).split('-').map(Number) as [number, number, number];
-    const day = hoursOn(y, m, d)[mode];
+    const hours = hoursOn(rules, y, m, d);
+    const day = hours[mode];
     if (!day) continue;
     if (offset === 0 && local.minutes >= toMinutes(day.open)) continue;
-    const hours = hoursOn(y, m, d);
     return {
       available: false,
       next: { date: hours.date, weekday: WEEKDAY_DE[hours.weekday] ?? '', time: day.open },
@@ -240,21 +275,25 @@ function modeStatus(local: LocalDateTime, mode: Fulfilment): ModeStatus {
   return { available: false };
 }
 
-export function shopStatus(instant: Date): ShopStatus {
+export function shopStatus(rules: ShopRules, instant: Date): ShopStatus {
   const local = berlinTime(instant);
   const minutes = String(local.minutes % 60).padStart(2, '0');
   const hours = String(Math.floor(local.minutes / 60)).padStart(2, '0');
   return {
     now: `${local.date}T${hours}:${minutes}`,
-    today: hoursOn(local.year, local.month, local.day),
-    pickup: modeStatus(local, 'pickup'),
-    delivery: modeStatus(local, 'delivery'),
+    today: hoursOn(rules, local.year, local.month, local.day),
+    pickup: modeStatus(rules, local, 'pickup'),
+    delivery: modeStatus(rules, local, 'delivery'),
   };
 }
 
 /**
  * The German sentence a diner reads when an order of this kind is refused now,
  * or `null` when it is taken. Used verbatim by the order route.
+ *
+ * The delivery sentence names THIS DAY's delivery close, read off the status,
+ * not a shop-wide constant — on Heiligabend the last delivery is 13:30, and a
+ * sentence that said 22:00 there would be a lie the diner acts on.
  */
 export function refusalFor(mode: Fulfilment, status: ShopStatus): string | null {
   const s = status[mode];
@@ -263,14 +302,120 @@ export function refusalFor(mode: Fulfilment, status: ShopStatus): string | null 
     ? ` Wieder möglich ab ${s.next.weekday}, ${s.next.time} Uhr.`
     : '';
   if (mode === 'delivery' && status.pickup.available) {
-    return `Lieferungen nehmen wir heute nur bis ${DELIVERY_UNTIL} Uhr an. Abholung ist noch bis ${status.pickup.until} Uhr möglich.${when}`;
+    const until = status.today.delivery?.close;
+    if (until) {
+      return `Lieferungen nehmen wir heute nur bis ${until} Uhr an. Abholung ist noch bis ${status.pickup.until} Uhr möglich.${when}`;
+    }
+    // The shop is open but delivers nothing today at all.
+    return `Wir liefern heute nicht. Abholung ist noch bis ${status.pickup.until} Uhr möglich.${when}`;
   }
   return `Wir haben gerade geschlossen und nehmen keine Bestellungen an.${when}`;
 }
 
-/** The weekly table as the shop prints it, for display. */
-export const HOURS_DISPLAY = [
-  { days: 'Montag, Mittwoch – Freitag', hours: '12:00 – 22:30 Uhr' },
-  { days: 'Samstag, Sonntag und Feiertage', hours: '13:00 – 22:30 Uhr' },
-  { days: 'Dienstag', hours: 'Ruhetag' },
-] as const;
+// --- The printed hours ------------------------------------------------------
+
+export interface DisplayRow {
+  days: string;
+  hours: string;
+}
+
+/**
+ * The weekly table as the shop prints it — derived from the SAME rows the
+ * server enforces, so the printed hours cannot drift from the real ones. It
+ * used to be a hand-written constant sitting beside the weekly table
+ * (decision D3).
+ *
+ * Grouping: weekdays with an identical window share a row; a run of three or
+ * more consecutive weekdays is written as a range ("Mittwoch – Freitag"),
+ * anything shorter is listed ("Samstag, Sonntag"). The public-holiday window
+ * is merged into the group with the same window as " und Feiertage", which is
+ * what the site's own footer prints; only when no group matches does it get a
+ * row of its own. Ruhetage come last.
+ */
+export function displayHours(rules: ShopRules): DisplayRow[] {
+  const groups = new Map<string, number[]>();
+  const ruhetage: number[] = [];
+
+  for (let weekday = 1; weekday <= 7; weekday += 1) {
+    const window = rules.weekly[weekday] ?? null;
+    if (!window) {
+      ruhetage.push(weekday);
+      continue;
+    }
+    const key = `${window.open}-${window.close}`;
+    groups.set(key, [...(groups.get(key) ?? []), weekday]);
+  }
+
+  const holidayKey = `${rules.holiday.open}-${rules.holiday.close}`;
+  const rows: DisplayRow[] = [];
+  for (const [key, weekdays] of groups) {
+    const [open, close] = key.split('-') as [string, string];
+    const days =
+      key === holidayKey
+        ? `${weekdayLabel(weekdays)} und Feiertage`
+        : weekdayLabel(weekdays);
+    rows.push({ days, hours: `${open} – ${close} Uhr` });
+  }
+
+  // A holiday window that matches no weekday group is still a real window a
+  // diner can turn up in, so it gets its own line rather than going unprinted.
+  if (!groups.has(holidayKey)) {
+    rows.push({
+      days: 'Feiertage',
+      hours: `${rules.holiday.open} – ${rules.holiday.close} Uhr`,
+    });
+  }
+
+  if (ruhetage.length > 0) {
+    rows.push({ days: weekdayLabel(ruhetage), hours: 'Ruhetag' });
+  }
+
+  return rows;
+}
+
+/** "Montag, Mittwoch – Freitag" for [1, 3, 4, 5]. */
+function weekdayLabel(weekdays: number[]): string {
+  const sorted = [...weekdays].sort((a, b) => a - b);
+  const runs: number[][] = [];
+  for (const weekday of sorted) {
+    const run = runs[runs.length - 1];
+    if (run && weekday === (run[run.length - 1] ?? 0) + 1) run.push(weekday);
+    else runs.push([weekday]);
+  }
+
+  const parts: string[] = [];
+  for (const run of runs) {
+    const first = run[0] as number;
+    const last = run[run.length - 1] as number;
+    // Two days read better listed ("Samstag, Sonntag") than as a range; three
+    // or more read better as a range, which is how the footer prints them.
+    if (run.length >= 3) parts.push(`${WEEKDAY_DE[first]} – ${WEEKDAY_DE[last]}`);
+    else parts.push(...run.map((weekday) => WEEKDAY_DE[weekday] ?? ''));
+  }
+  return parts.join(', ');
+}
+
+// --- Special days a diner should know about ---------------------------------
+
+/**
+ * Every date in the next `days` days (today included) whose hours were decided
+ * by a special day, in date order — so the menu can say "Silvester: geöffnet
+ * bis 18:00 Uhr" before the diner stands in front of a closed door. `special`
+ * is always set on these.
+ */
+export function upcomingSpecialDays(
+  rules: ShopRules,
+  instant: Date,
+  days = 30,
+): DayHours[] {
+  const local = berlinTime(instant);
+  const found: DayHours[] = [];
+  for (let offset = 0; offset < days; offset += 1) {
+    const [y, m, d] = shiftDate(local.year, local.month, local.day, offset)
+      .split('-')
+      .map(Number) as [number, number, number];
+    const hours = hoursOn(rules, y, m, d);
+    if (hours.special) found.push(hours);
+  }
+  return found;
+}

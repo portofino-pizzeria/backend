@@ -4,6 +4,8 @@ import { buildApp } from './app.js';
 import { config, kitchenAuthMode } from './config.js';
 import { runMigrations } from './db/migrate.js';
 import { seedMenu } from './db/seed.js';
+import { seedShop } from './db/seed-shop.js';
+import { refreshLegalStatus } from './lib/legal-status.js';
 
 async function main() {
   const app = await buildApp();
@@ -59,7 +61,19 @@ async function initDatabase(app: FastifyInstance): Promise<void> {
     try {
       await runMigrations();
       const seeded = await seedMenu();
-      app.log.info(`Database ready (${seeded} menu items).`);
+      // The restaurant's own facts, seeded the same way: only into a database
+      // that has no `shop_profile` row (see db/seed-shop.ts).
+      const shop = await seedShop();
+      app.log.info(
+        `Database ready (${seeded} menu items; shop facts ${
+          shop === 'seeded' ? 'seeded from the defaults' : 'owner-authored'
+        }).`,
+      );
+      // Fill the /api/health legal cache once the database is up. It is the
+      // ONLY place that route's answer comes from — the health check must not
+      // query the database (App Runner points its own at it, and this process
+      // serves before the DB is reachable at all).
+      await refreshLegalStatus();
       return;
     } catch (err) {
       app.log.warn(

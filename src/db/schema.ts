@@ -1,8 +1,10 @@
 import { sql } from 'drizzle-orm';
 import {
   boolean,
+  check,
   index,
   integer,
+  jsonb,
   pgTable,
   serial,
   text,
@@ -161,9 +163,167 @@ export const datasetSeeds = pgTable('dataset_seeds', {
     .defaultNow(),
 });
 
+// --- The restaurant's own facts --------------------------------------------
+//
+// These used to be code constants in `src/lib/shop.ts`, which meant that
+// changing a closing time took a developer, a PR and a deploy. They are rows
+// now, owned by the owner's editor. Nothing here is seeded by a migration: the
+// test harness truncates every public table before every test, so
+// migration-inserted rows would be invisible to the suite. `seedShop()`
+// (src/db/seed-shop.ts) writes the defaults from code instead, so a fresh
+// database and a test database reach the same state by the same path.
+//
+// Times are `HH:MM` wall-clock strings in Europe/Berlin — the same shape the
+// API serves and the editor edits. They are deliberately not `time` columns:
+// nothing here does date arithmetic in SQL, and a `time` round-trips through
+// the driver as `22:30:00`, which would then have to be trimmed on the way out.
+
+/**
+ * The single row of shop-wide facts, `id = 1`. A CHECK pins the id, so "two
+ * profiles" is unrepresentable rather than a race waiting to happen.
+ *
+ * `version` is the optimistic-concurrency counter for the WHOLE editor
+ * (profile, weekly hours and special days alike): every write bumps it, and a
+ * write that carries a stale one is refused with 409. One counter, because the
+ * owner edits one restaurant from one phone and a second tab must not be able
+ * to overwrite what the first just saved.
+ */
+export const shopProfile = pgTable(
+  'shop_profile',
+  {
+    id: integer('id').primaryKey(),
+    name: text('name').notNull(),
+    street: text('street').notNull(),
+    postalCode: text('postal_code').notNull(),
+    city: text('city').notNull(),
+    /** Exactly as the shop prints it, e.g. "02054 – 15 88 3". */
+    phoneDisplay: text('phone_display').notNull(),
+    /** The same number, dialable. Derived on the SERVER from `phoneDisplay`. */
+    phoneE164: text('phone_e164').notNull(),
+    /** Impressum contact. Written only by `PUT /api/admin/shop/legal`. */
+    email: text('email'),
+    /** "Lieferzeit bis 22.00 Uhr" — the last moment a delivery order is taken. */
+    deliveryUntil: text('delivery_until').notNull(),
+    /** "Sa, So u. Feiertage" — the window a public holiday takes. */
+    holidayOpen: text('holiday_open').notNull(),
+    holidayClose: text('holiday_close').notNull(),
+    /** While true, a Ruhetag stays closed on a public holiday (decision D1). */
+    ruhetagBeatsHoliday: boolean('ruhetag_beats_holiday').notNull().default(true),
+
+    // The Impressum (§ 5 DDG). All nullable: none of these facts appears in any
+    // document this repository can read, and inventing a legal name or a VAT id
+    // would be worse than reporting the gap — which `/api/health` does.
+    legalOwnerName: text('legal_owner_name'),
+    legalForm: text('legal_form'),
+    vatId: text('vat_id'),
+    registerCourt: text('register_court'),
+    registerNumber: text('register_number'),
+    /** Stamped when the owner ticks "korrekt und vollständig". */
+    legalConfirmedAt: timestamp('legal_confirmed_at', { withTimezone: true }),
+
+    version: integer('version').notNull().default(1),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    onlyRow: check('shop_profile_singleton', sql`${t.id} = 1`),
+  }),
+);
+
+/**
+ * One row per ISO weekday (1 = Monday … 7 = Sunday). `open` and `close` are
+ * NULL **together** and mean Ruhetag — a CHECK makes "an opening time with no
+ * closing time" impossible, because that state has no honest answer for a
+ * diner asking whether the shop is open.
+ */
+export const shopWeeklyHours = pgTable(
+  'shop_weekly_hours',
+  {
+    weekday: integer('weekday').primaryKey(),
+    open: text('open'),
+    close: text('close'),
+  },
+  (t) => ({
+    weekdayRange: check(
+      'shop_weekly_hours_weekday_range',
+      sql`${t.weekday} between 1 and 7`,
+    ),
+    bothOrNeither: check(
+      'shop_weekly_hours_both_or_neither',
+      sql`(${t.open} is null) = (${t.close} is null)`,
+    ),
+  }),
+);
+
+/**
+ * A day that does not follow the weekly table: either a one-off `date`
+ * (`YYYY-MM-DD`) or a `month_day` (`MM-DD`) that recurs every year. Exactly one
+ * of the two is set — a CHECK, because a row that is both or neither could not
+ * be resolved against a calendar at all.
+ *
+ * `open` may be NULL only on a recurring row that is open, and means "the
+ * weekday's normal opening" (decision D4: Heiligabend closes early but opens
+ * when it always does). `confirmed` is false on the two seeded D4 rows until
+ * the owner saves them once — the editor shows them as "Vorbelegt – bitte
+ * prüfen", because no source states Portofino's real hours on those days.
+ */
+export const shopSpecialDays = pgTable(
+  'shop_special_days',
+  {
+    id: serial('id').primaryKey(),
+    date: text('date'),
+    monthDay: text('month_day'),
+    closed: boolean('closed').notNull().default(false),
+    open: text('open'),
+    close: text('close'),
+    deliveryUntil: text('delivery_until'),
+    note: text('note').notNull().default(''),
+    confirmed: boolean('confirmed').notNull().default(true),
+  },
+  (t) => ({
+    datedXorRecurring: check(
+      'shop_special_days_date_xor_month_day',
+      sql`(${t.date} is null) <> (${t.monthDay} is null)`,
+    ),
+    // An open day must say when it closes. `open` may be missing only on a
+    // recurring row, where it means "the weekday's normal opening".
+    openNeedsClose: check(
+      'shop_special_days_open_needs_close',
+      sql`${t.closed} or (${t.close} is not null and (${t.open} is not null or ${t.monthDay} is not null))`,
+    ),
+    // Partial, because the two columns are exclusive: one unique index over
+    // both would let the same date in twice (NULLs never collide).
+    dateUnique: uniqueIndex('shop_special_days_date_unique')
+      .on(t.date)
+      .where(sql`${t.date} is not null`),
+    monthDayUnique: uniqueIndex('shop_special_days_month_day_unique')
+      .on(t.monthDay)
+      .where(sql`${t.monthDay} is not null`),
+  }),
+);
+
+/**
+ * The editor's history, one row per successful shop write. `before` and
+ * `after` are WHOLE-SHOP snapshots rather than a diff, so one undo reverses
+ * any kind of write — a week changed, a special day created, a profile saved —
+ * with no per-entity replay logic to get wrong. The undo is itself recorded as
+ * a change, which makes a second undo a redo.
+ */
+export const adminChanges = pgTable('admin_changes', {
+  id: serial('id').primaryKey(),
+  entity: text('entity').notNull(), // 'shop'
+  before: jsonb('before'),
+  after: jsonb('after'),
+  at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type MenuCategoryRow = typeof menuCategories.$inferSelect;
 export type AllergenLegendRow = typeof allergenLegend.$inferSelect;
 export type MenuItemRow = typeof menuItems.$inferSelect;
 export type MenuItemVariantRow = typeof menuItemVariants.$inferSelect;
 export type OrderRow = typeof orders.$inferSelect;
 export type OrderLineRow = typeof orderLines.$inferSelect;
+export type ShopProfileRow = typeof shopProfile.$inferSelect;
+export type ShopWeeklyHoursRow = typeof shopWeeklyHours.$inferSelect;
+export type ShopSpecialDayRow = typeof shopSpecialDays.$inferSelect;
