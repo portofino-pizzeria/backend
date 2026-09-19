@@ -1,3 +1,26 @@
+// data/menu.json IS NOT THE LIVE MENU.
+//
+// It is the bootstrap for a fresh database and the fixture the dataset tests
+// read. `seedMenu()` (seed.ts) loads it exactly once per database — recorded
+// by the `menu` row in `dataset_seeds` — and from then on the database is the
+// menu and the owner edits it in the menu editor (`/api/admin/menu/*`).
+// Editing this file changes nothing in a database that has been seeded: no
+// boot, deploy or restart reads it again.
+//
+// How a menu correction ships instead:
+//
+//  - Before cutover: as a data migration — an idempotent SQL file created with
+//    `npx drizzle-kit generate --custom --name=<what>` (so it is in the
+//    journal), reviewed like any migration and run once — AND the same edit to
+//    `data/menu.json` in the same PR. On a fresh database the migrations run
+//    before the seed, so a migration alone would act on empty tables and the
+//    seed would then load the old row.
+//  - After cutover: the owner corrects the menu in the editor.
+//
+// `npm run db:reseed -- --force` (reseed.ts) is the one command that reloads
+// this file over an existing menu, and it erases every owner edit.
+// See data/README.md.
+//
 // Loads and validates the captured Portofino menu (backend/data/menu.json)
 // into the shape the seed loader writes to the database.
 //
@@ -19,7 +42,7 @@
 //     naming every offending id — not just the first problem found.
 //
 // `loadMenuDataset()` is the only export seed.ts needs; the dataset never
-// reaches seedMenu()'s transaction unless both passes succeed.
+// reaches the seed's transaction unless both passes succeed.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

@@ -145,6 +145,22 @@ export const orderLines = pgTable('order_lines', {
   quantity: integer('quantity').notNull(),
 });
 
+// One row per dataset that has been bootstrapped into this database, written
+// in the same transaction as the bootstrap itself (see `seedMenu()` in
+// seed.ts). Its presence means "this dataset was loaded once; from here on the
+// rows belong to whoever edits them" — for `menu`, the owner's editor.
+//
+// It deliberately records only *that* and *when*, never a version or hash of
+// the dataset file: a marker that compared datasets would reseed on the first
+// edit to `data/menu.json` and erase every owner edit, which is exactly what
+// this table exists to stop.
+export const datasetSeeds = pgTable('dataset_seeds', {
+  name: text('name').primaryKey(), // e.g. "menu"
+  seededAt: timestamp('seeded_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type MenuCategoryRow = typeof menuCategories.$inferSelect;
 export type AllergenLegendRow = typeof allergenLegend.$inferSelect;
 export type MenuItemRow = typeof menuItems.$inferSelect;

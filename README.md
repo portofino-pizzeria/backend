@@ -45,13 +45,23 @@ cp .env.example .env          # defaults work as-is for local/mock mode …
                               # … except the kitchen dashboard: see below
 npm run db:up                 # start Postgres (docker compose)
 npm run db:generate           # generate the initial SQL migration from schema
-npm run dev                   # loads .env, migrates + seeds + serves on :4000
+npm run dev                   # loads .env, migrates, seeds an empty DB, serves on :4000
 ```
 
-`npm run dev`, `db:migrate` and `db:seed` all read `.env` and **refuse to start
-without one** (`node: .env: not found`) — that is the `cp` above, not a broken
-install. `npm start` never reads it; a deployed service is configured by its
-platform.
+`npm run dev`, `db:migrate`, `db:seed` and `db:reseed` all read `.env` and
+**refuse to start without one** (`node: .env: not found`) — that is the `cp`
+above, not a broken install. `npm start` never reads it; a deployed service is
+configured by its platform.
+
+The menu is seeded **once per database**. Every boot (and `npm run db:seed`)
+calls `seedMenu()` (`src/db/seed.ts`), which loads `data/menu.json` only into a
+database that has never had a menu and records that in `dataset_seeds`; a
+database that has one is left alone, and the boot log says so. After that the
+menu belongs to the owner's editor, and **editing `data/menu.json` changes
+nothing in that database** — see [`data/README.md`](data/README.md) for how a
+correction ships instead. To throw the local menu away and reload the file,
+run `npm run db:reseed -- --force`; it erases every editor change, and with
+`NODE_ENV=production` it also wants `--i-know-this-erases-owner-edits`.
 
 Then start the app in `../mobile` (`npm run web`) — it auto-targets
 `http://localhost:4000`.
@@ -227,7 +237,10 @@ immediately; tick **`rebuild`** to push a fresh digest for the same commit.
 **A rollback across a migration is not a rollback.** Migrations run on boot
 and are not reversed by deploying older code; the old code would run against
 the new schema. Treat that case as a forward fix — or, when the data itself has
-to go back, restore the pre-deploy snapshot below.
+to go back, restore the pre-deploy snapshot below. Rolling back to a commit
+older than `drizzle/0004_dataset_seeds.sql` is worse than that: its boot
+reloads `data/menu.json` over the owner's menu (see "The database restore
+point").
 
 ### The database restore point
 
@@ -248,11 +261,15 @@ Two limits on what that protects, both outside this workflow:
   boot, a later deploy with the same `drizzle/` — a code-only hotfix, a
   `rebuild` — can apply it with no snapshot taken, and so can a plain scale-out
   of the live image, with no deploy at all.
-- **Owner menu edits are not protected by any snapshot** (#13). Every boot whose
-  database init succeeds runs `seedMenu()` (`src/db/seed.ts`), which deletes all
-  rows in the four menu tables and reloads `data/menu.json`. Edits made through
-  the owner's menu editor are lost on every deploy, scale-out and restore,
-  snapshot or not.
+- **Owner menu edits are safe from boots only on code that has the seed
+  marker** (#13). A boot's `seedMenu()` (`src/db/seed.ts`) writes the menu only
+  into a database that has never had one (`dataset_seeds`), so deploys,
+  scale-outs and restarts keep the owner's edits, and a restored snapshot has
+  the menu as it was when the snapshot was taken. Code older than
+  `drizzle/0004_dataset_seeds.sql` still deletes the four menu tables and
+  reloads `data/menu.json` on every boot: running such a commit — a rollback,
+  or the step-1 dispatch below — erases every edit made in the owner's menu
+  editor, snapshot or not.
 
 The CI role may create snapshots under the prefix and never delete one
 (`../infra/github-oidc.tf`, `SnapshotProductionDbBeforeDeploy`). They do not
@@ -279,9 +296,11 @@ matters:
    step 2 pauses the service, so expect errors in that short window; from step 2
    to step 5 nothing is served at all. (That run usually snapshots the damaged
    database too — when `drizzle/` differs between the live commit and the
-   rollback target; check that step's log rather than assume.) Menu edits cannot
-   be recovered this way: every boot reseeds the menu tables (see the limits
-   above), including the boots in steps 1 and 5.
+   rollback target; check that step's log rather than assume.) The menu comes
+   back as it was in the snapshot; owner edits made after it are lost with
+   everything else written after it. If the sha you dispatch predates
+   `drizzle/0004_dataset_seeds.sql`, its boots in steps 1 and 5 also reload
+   `data/menu.json` over the restored menu (see the limits above).
 2. **Stop traffic until step 5.** Renaming a cluster does not close the
    connections already open to it: each backend instance holds a pool
    (`src/db/client.ts`), so orders placed during the restore would land on the

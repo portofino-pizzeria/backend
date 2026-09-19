@@ -1,9 +1,12 @@
 import { fileURLToPath } from 'node:url';
 
+import { count, eq, sql as drizzleSql } from 'drizzle-orm';
+
 import { db, sql } from './client.js';
 import { loadMenuDataset, type MenuDataset } from './menu-dataset.js';
 import {
   allergenLegend,
+  datasetSeeds,
   menuCategories,
   menuItemVariants,
   menuItems,
@@ -101,104 +104,105 @@ function presentationOrder(items: MenuDataset['items']): Map<string, number> {
   return order;
 }
 
+/** The transaction handle drizzle passes to a `db.transaction` callback. */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** The `dataset_seeds` row that records the menu bootstrap. */
+const MENU_DATASET = 'menu';
+
 /**
- * Replaces the menu tables wholesale with the captured Portofino dataset
- * (`backend/data/menu.json`). Idempotent — safe to run any number of times,
- * including on every server boot, since `index.ts` calls this as part of its
- * DB-init retry loop.
- *
- * Validates the whole dataset (see menu-dataset.ts) before opening a
- * transaction, then clears and reloads `menu_categories`, `allergen_legend`,
- * `menu_items` and `menu_item_variants` in one transaction so a reader never
- * observes a half-loaded menu. `orders` / `order_lines` are never touched —
- * order history must survive a reseed, which is exactly why those tables
- * reference menu ids by plain text rather than a foreign key (see the
- * comment on `orderLines` in schema.ts).
- *
- * Returns the number of items seeded. `index.ts` logs this value directly
- * (`Database ready (${seeded} menu items)`), so the return type stays a
- * plain number rather than the richer summary printed below.
+ * Serialises every writer of the menu bootstrap for the length of its
+ * transaction. Two instances booting at once (a deploy overlapping the old
+ * revision, an App Runner scale-out) would otherwise both see "no marker, no
+ * items", both load the dataset, and one would fail on the primary keys — or
+ * a reseed would interleave with a boot's check. The lock is
+ * transaction-scoped, so the commit or rollback releases it and a crashed
+ * process can never leak it.
  */
-export async function seedMenu(): Promise<number> {
-  const dataset = loadMenuDataset();
-  const summary = buildSummary(dataset);
+async function lockMenuDataset(tx: Tx): Promise<void> {
+  await tx.execute(
+    drizzleSql`select pg_advisory_xact_lock(hashtext('portofino:dataset_seeds:menu'))`,
+  );
+}
 
-  await db.transaction(async (tx) => {
-    // FK-safe delete order: variants depend on items, items depend on
-    // categories. `allergen_legend` has no FK relationship to any of these —
-    // it's deleted last only for symmetry with the insert order below.
-    await tx.delete(menuItemVariants);
-    await tx.delete(menuItems);
-    await tx.delete(menuCategories);
-    await tx.delete(allergenLegend);
+async function countMenuItems(tx: Tx): Promise<number> {
+  const [row] = await tx.select({ n: count() }).from(menuItems);
+  return Number(row?.n ?? 0);
+}
 
-    if (dataset.allergenLegend.length > 0) {
-      await tx.insert(allergenLegend).values(
-        // The capture carries no sortOrder for legend entries (only
-        // categories/items/variants do) — the array index preserves the
-        // order the source's own legend block renders in.
-        dataset.allergenLegend.map((entry, index) => ({
-          code: entry.code,
-          labelDe: entry.labelDe,
-          labelEn: entry.labelEn,
-          sortOrder: index,
-        })),
-      );
-    }
-
-    if (dataset.categories.length > 0) {
-      await tx.insert(menuCategories).values(
-        dataset.categories.map((category) => ({
-          id: category.id,
-          label: category.labelDe, // JSON key is labelDe; column is label.
-          labelEn: category.labelEn,
-          sortOrder: category.sortOrder,
-        })),
-      );
-    }
-
-    const menuOrder = presentationOrder(dataset.items);
-    const pickupOnly = new Set(dataset.pickup?.pickupOnlyOffers ?? []);
-
-    if (dataset.items.length > 0) {
-      await tx.insert(menuItems).values(
-        dataset.items.map((item) => ({
-          id: item.id,
-          number: item.number,
-          name: item.name,
-          nameEn: item.nameEn,
-          // The column is NOT NULL default '' — a handful of real items
-          // (sauces, Pommes) print no description at all; map null to the
-          // schema's own empty-string default rather than inventing text.
-          description: item.description ?? '',
-          descriptionEn: item.descriptionEn,
-          categoryId: item.categoryId,
-          allergenCodes: item.allergenCodes, // Verbatim — never filtered.
-          imageUrl: null, // Not in the capture; the owner adds these later.
-          available: item.available,
-          pickupOnly: pickupOnly.has(item.id),
-          sortOrder: menuOrder.get(item.id) ?? item.sortOrder,
-        })),
-      );
-    }
-
-    const variantRows = dataset.items.flatMap((item) =>
-      item.variants.map((variant) => ({
-        id: variant.id,
-        itemId: item.id,
-        label: variant.label,
-        sortOrder: variant.sortOrder,
-        priceCents: variant.priceCents, // JSON key matches; column is price_cents.
+/**
+ * Writes the dataset into the four menu tables. The caller owns the
+ * transaction, the lock, and the guarantee that the tables are empty.
+ */
+async function insertDataset(tx: Tx, dataset: MenuDataset): Promise<void> {
+  if (dataset.allergenLegend.length > 0) {
+    await tx.insert(allergenLegend).values(
+      // The capture carries no sortOrder for legend entries (only
+      // categories/items/variants do) — the array index preserves the
+      // order the source's own legend block renders in.
+      dataset.allergenLegend.map((entry, index) => ({
+        code: entry.code,
+        labelDe: entry.labelDe,
+        labelEn: entry.labelEn,
+        sortOrder: index,
       })),
     );
-    if (variantRows.length > 0) {
-      await tx.insert(menuItemVariants).values(variantRows);
-    }
-  });
+  }
 
+  if (dataset.categories.length > 0) {
+    await tx.insert(menuCategories).values(
+      dataset.categories.map((category) => ({
+        id: category.id,
+        label: category.labelDe, // JSON key is labelDe; column is label.
+        labelEn: category.labelEn,
+        sortOrder: category.sortOrder,
+      })),
+    );
+  }
+
+  const menuOrder = presentationOrder(dataset.items);
+  const pickupOnly = new Set(dataset.pickup?.pickupOnlyOffers ?? []);
+
+  if (dataset.items.length > 0) {
+    await tx.insert(menuItems).values(
+      dataset.items.map((item) => ({
+        id: item.id,
+        number: item.number,
+        name: item.name,
+        nameEn: item.nameEn,
+        // The column is NOT NULL default '' — a handful of real items
+        // (sauces, Pommes) print no description at all; map null to the
+        // schema's own empty-string default rather than inventing text.
+        description: item.description ?? '',
+        descriptionEn: item.descriptionEn,
+        categoryId: item.categoryId,
+        allergenCodes: item.allergenCodes, // Verbatim — never filtered.
+        imageUrl: null, // Not in the capture; the owner adds these later.
+        available: item.available,
+        pickupOnly: pickupOnly.has(item.id),
+        sortOrder: menuOrder.get(item.id) ?? item.sortOrder,
+      })),
+    );
+  }
+
+  const variantRows = dataset.items.flatMap((item) =>
+    item.variants.map((variant) => ({
+      id: variant.id,
+      itemId: item.id,
+      label: variant.label,
+      sortOrder: variant.sortOrder,
+      priceCents: variant.priceCents, // JSON key matches; column is price_cents.
+    })),
+  );
+  if (variantRows.length > 0) {
+    await tx.insert(menuItemVariants).values(variantRows);
+  }
+}
+
+function logLoaded(heading: string, summary: SeedSummary): void {
   console.log(
     [
-      'Menu seeded from data/menu.json:',
+      heading,
       `  allergen legend : ${summary.legendCodes}`,
       `  categories      : ${summary.categories}`,
       `  items           : ${summary.items}`,
@@ -209,15 +213,144 @@ export async function seedMenu(): Promise<number> {
         : '  empty categories: none',
     ].join('\n'),
   );
+}
 
+type SeedOutcome =
+  | { kind: 'loaded'; items: number; summary: SeedSummary }
+  | { kind: 'adopted'; items: number }
+  | { kind: 'owner-authored'; items: number; seededAt: Date };
+
+/**
+ * Bootstraps the menu from the captured Portofino dataset
+ * (`backend/data/menu.json`) **once per database**, and never again.
+ *
+ * `index.ts` calls this on every boot, inside its DB-init retry loop. It used
+ * to delete and reload the four menu tables each time, which erased every
+ * edit the owner made in the menu editor on every deploy, scale-out and
+ * restart. Now the database is the source of truth as soon as it has a menu,
+ * and a `menu` row in `dataset_seeds` records that it has had one:
+ *
+ *  - no marker and no items (a fresh database) → load the dataset and write
+ *    the marker;
+ *  - no marker but items present (every database that predates the marker)
+ *    → write the marker and nothing else;
+ *  - a marker → write nothing, even when the owner has since deleted every
+ *    item. An empty menu is then the owner's doing, and bringing the captured
+ *    menu back would be the same erasure in reverse. That is also why the
+ *    marker records only *that* the menu was seeded, never which version of
+ *    the file: a version check would reseed on the first edit to the file.
+ *
+ * All of it runs in one transaction under an advisory lock
+ * (`lockMenuDataset`), so a reader never observes a half-loaded menu and two
+ * instances booting at once cannot both load it. The dataset file is read and
+ * validated (see menu-dataset.ts) only when it is actually going to be loaded,
+ * so a database that already has its menu does not depend on
+ * `data/menu.json` at all. `orders` / `order_lines` are never touched.
+ *
+ * The deliberate full reset is `reseedMenu()` (`npm run db:reseed`), never
+ * this function.
+ *
+ * Returns the number of menu items in the database afterwards — loaded now or
+ * already there. `index.ts` logs it as `Database ready (${n} menu items)`, so
+ * it has to describe the live menu, not the file.
+ */
+export async function seedMenu(): Promise<number> {
+  const outcome = await db.transaction(async (tx): Promise<SeedOutcome> => {
+    await lockMenuDataset(tx);
+
+    const [marker] = await tx
+      .select()
+      .from(datasetSeeds)
+      .where(eq(datasetSeeds.name, MENU_DATASET));
+    const existingItems = await countMenuItems(tx);
+
+    if (marker) {
+      return { kind: 'owner-authored', items: existingItems, seededAt: marker.seededAt };
+    }
+
+    if (existingItems > 0) {
+      await tx.insert(datasetSeeds).values({ name: MENU_DATASET });
+      return { kind: 'adopted', items: existingItems };
+    }
+
+    const dataset = loadMenuDataset();
+    await insertDataset(tx, dataset);
+    await tx.insert(datasetSeeds).values({ name: MENU_DATASET });
+    return { kind: 'loaded', items: dataset.items.length, summary: buildSummary(dataset) };
+  });
+
+  switch (outcome.kind) {
+    case 'loaded':
+      logLoaded('Menu seeded from data/menu.json (fresh database):', outcome.summary);
+      break;
+    case 'adopted':
+      console.log(
+        `Menu already present (${outcome.items} items) — not reseeding. ` +
+          'Recorded it as seeded; from now on the database is the menu.',
+      );
+      break;
+    case 'owner-authored':
+      console.log(
+        `Menu was seeded at ${outcome.seededAt.toISOString()} and is owner-authored ` +
+          `since (${outcome.items} items) — not reseeding; data/menu.json is not read.`,
+      );
+      break;
+  }
+
+  return outcome.items;
+}
+
+/**
+ * The deliberate full reset: deletes the four menu tables, reloads them from
+ * `data/menu.json` and rewrites the `menu` marker, in one transaction under
+ * the same lock as `seedMenu()`. **Every owner edit is erased.** Only the
+ * guarded `npm run db:reseed -- --force` command (reseed.ts) calls it; no
+ * boot path does.
+ *
+ * `orders` / `order_lines` are never touched — order history must survive a
+ * reseed, which is exactly why those tables reference menu ids by plain text
+ * rather than a foreign key (see the comment on `orderLines` in schema.ts).
+ *
+ * Returns the number of items loaded.
+ */
+export async function reseedMenu(): Promise<number> {
+  // Validated before the transaction opens: a broken dataset fails here and
+  // the live menu is left exactly as it was.
+  const dataset = loadMenuDataset();
+  const summary = buildSummary(dataset);
+
+  await db.transaction(async (tx) => {
+    await lockMenuDataset(tx);
+
+    // FK-safe delete order: variants depend on items, items depend on
+    // categories. `allergen_legend` has no FK relationship to any of these —
+    // it's deleted last only for symmetry with the insert order.
+    await tx.delete(menuItemVariants);
+    await tx.delete(menuItems);
+    await tx.delete(menuCategories);
+    await tx.delete(allergenLegend);
+
+    await insertDataset(tx, dataset);
+
+    await tx
+      .insert(datasetSeeds)
+      .values({ name: MENU_DATASET })
+      .onConflictDoUpdate({
+        target: datasetSeeds.name,
+        set: { seededAt: drizzleSql`now()` },
+      });
+  });
+
+  logLoaded('Menu RESEEDED from data/menu.json — every owner edit replaced:', summary);
   return summary.items;
 }
 
-// Allow running standalone: `npm run db:seed`. Compared via fileURLToPath
-// rather than a raw string template — on Windows `import.meta.url` is a
-// `file:///C:/...` URL with forward slashes while `process.argv[1]` is a
-// native `C:\...` path, so `` `file://${process.argv[1]}` `` never matches
-// and this guard would silently never fire.
+// Allow running standalone: `npm run db:seed` — the same seed-once path a boot
+// runs. Compared via fileURLToPath rather than a raw string template — on
+// Windows `import.meta.url` is a `file:///C:/...` URL with forward slashes
+// while `process.argv[1]` is a native `C:\...` path, so
+// `` `file://${process.argv[1]}` `` never matches and this guard would
+// silently never fire.
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   seedMenu()
     .then(() => sql.end())

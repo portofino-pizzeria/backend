@@ -21,7 +21,9 @@ async function main() {
 
   // Then bring the schema up + seed, retrying while the DB becomes reachable —
   // a freshly-provisioned Aurora endpoint can take a bit to resolve/accept
-  // connections. Idempotent, so safe on every boot.
+  // connections. Safe on every boot: migrations apply only what is pending,
+  // and seedMenu() loads data/menu.json only into a database that has never
+  // had a menu — it never overwrites the owner's edits (see seed.ts).
   await initDatabase(app);
 }
 
