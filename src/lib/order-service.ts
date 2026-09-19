@@ -4,6 +4,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 
 import { config } from '../config.js';
 import { now } from './clock.js';
+import { loadShopRules } from './shop-rules.js';
 import { refusalFor, shopStatus } from './shop.js';
 import { db } from '../db/client.js';
 import {
@@ -85,9 +86,12 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
   const fulfilment: Fulfilment = input.fulfilment ?? 'delivery';
 
   // Opening hours first: a closed kitchen refuses every order, whatever is in
-  // it. A delivery after DELIVERY_UNTIL is refused with the pickup alternative
-  // named, because the shop is still open for collection.
-  const refusal = refusalFor(fulfilment, shopStatus(now()));
+  // it. A delivery after the day's last delivery time is refused with the
+  // pickup alternative named, because the shop is still open for collection.
+  // The rules are read here, once per order, from the rows the owner edits —
+  // and an unreadable shop is a 503, never an accepted order (shop-rules.ts).
+  const rules = await loadShopRules();
+  const refusal = refusalFor(fulfilment, shopStatus(rules, now()));
   if (refusal) throw badRequest(refusal);
 
   for (const it of items) {

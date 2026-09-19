@@ -15,3 +15,8 @@ export const notFound = (msg = 'Not found') => new HttpError(404, msg);
 export const badRequest = (msg = 'Bad request') => new HttpError(400, msg);
 export const unauthorized = (msg = 'Unauthorized') => new HttpError(401, msg);
 export const conflict = (msg = 'Conflict') => new HttpError(409, msg);
+// 503, not 500: "ask again in a moment" rather than "this request is broken".
+// The shop rules loader throws it when the restaurant's hours cannot be read,
+// and everything that would take an order then fails closed.
+export const serviceUnavailable = (msg = 'Service unavailable') =>
+  new HttpError(503, msg);
