@@ -288,7 +288,7 @@ describe('D5.2 — impossible states are refused', () => {
     expect(day).toMatchObject({
       pickup: { open: '13:00', close: '16:00' },
       delivery: null,
-      special: 'Nur Abholung',
+      special: 'Nur Abholung: geöffnet bis 16:00 Uhr, keine Lieferung',
     });
   });
 
@@ -662,7 +662,7 @@ describe('a special day the owner enters reaches the order route', () => {
       .then((r) => r.json<{ specialDays: { date: string; special: string }[] }>());
     expect(shopBody.specialDays[0]).toMatchObject({
       date: '2026-09-17',
-      special: 'Betriebsausflug',
+      special: 'Betriebsausflug: geschlossen',
     });
   });
 
@@ -680,7 +680,7 @@ describe('a special day the owner enters reaches the order route', () => {
         open: null,
         close: '15:00',
         deliveryUntil: '14:30',
-        note: 'Heiligabend: geöffnet bis 15:00 Uhr',
+        note: 'Heiligabend',
         version: shop.version,
       },
     );

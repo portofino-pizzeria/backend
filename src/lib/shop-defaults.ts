@@ -78,7 +78,7 @@ export const DEFAULT_SHOP_RULES: ShopRules = {
       open: null, // the weekday's normal opening
       close: '14:00',
       deliveryUntil: '13:30',
-      note: 'Heiligabend: geöffnet bis 14:00 Uhr',
+      note: 'Heiligabend',
       confirmed: false,
     },
     {
@@ -88,7 +88,7 @@ export const DEFAULT_SHOP_RULES: ShopRules = {
       open: null, // the weekday's normal opening
       close: '18:00',
       deliveryUntil: '17:30',
-      note: 'Silvester: geöffnet bis 18:00 Uhr',
+      note: 'Silvester',
       confirmed: false,
     },
   ],

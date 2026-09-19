@@ -133,7 +133,14 @@ export interface DayHours {
   weekday: number;
   /** Set when the day is a public holiday. */
   holiday?: string;
-  /** The note of the special day that decided this date, when one did. */
+  /**
+   * The sentence a diner reads when a special day decided this date: the
+   * owner's own LABEL ("Silvester", "Betriebsurlaub") with the hours this
+   * server enforces appended. The owner writes the label and edits the times;
+   * the sentence is composed here, so a changed closing time can never leave a
+   * stale "geöffnet bis 18:00 Uhr" in front of a door that shuts at 17:00
+   * (decision D3: the owner edits times, never sentences).
+   */
   special?: string;
   /** Pickup and the shop: open to close. `null` when closed all day. */
   pickup: Window | null;
@@ -205,10 +212,28 @@ export function hoursOn(
     date,
     weekday,
     ...(holiday ? { holiday } : {}),
-    ...(note ? { special: note } : {}),
+    ...(note ? { special: specialSentence(note, window, delivery) } : {}),
     pickup: window,
     delivery,
   };
+}
+
+/**
+ * The diner-facing sentence for a special day: the owner's label plus the
+ * hours actually enforced for that date. Composed, never stored — a stored
+ * sentence is a second source of truth, and the first edit of a closing time
+ * would make it a lie (decision D3).
+ */
+export function specialSentence(
+  label: string,
+  window: Window | null,
+  delivery: Window | null,
+): string {
+  if (!window) return `${label}: geschlossen`;
+  const base = `${label}: geöffnet bis ${window.close} Uhr`;
+  if (!delivery) return `${base}, keine Lieferung`;
+  if (delivery.close === window.close) return base;
+  return `${base}, Lieferung bis ${delivery.close} Uhr`;
 }
 
 /**
