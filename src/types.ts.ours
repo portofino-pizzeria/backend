@@ -138,29 +138,6 @@ export interface Order {
 }
 
 /**
-<<<<<<< HEAD
- * The legal notice (Impressum) facts `GET /api/shop` serves, § 5 DDG.
- *
- * Every one of them may be `null`: none appears in any document this
- * repository can read, and an invented legal name would be worse than a gap
- * the app can name. `complete` and `missing` say which, so the Impressum page
- * can render what is known and say what is not — and so `/api/health` can
- * report the gap to a deploy. `vatId` and the register fields are OMITTED
- * rather than null when unset, because for an Einzelunternehmen they normally
- * do not apply at all.
- */
-export interface ShopLegal {
-  ownerName: string | null;
-  legalForm: string | null;
-  email: string | null;
-  vatId?: string;
-  registerCourt?: string;
-  registerNumber?: string;
-  /** `ownerName` and `email` are both set. */
-  complete: boolean;
-  /** e.g. `["legalOwnerName", "email"]`. */
-  missing: string[];
-=======
  * The `POST /api/orders` response.
  *
  * `accessToken` is returned HERE and nowhere else — this is the one moment the
@@ -172,5 +149,4 @@ export interface ShopLegal {
 export interface CreatedOrder {
   order: Order;
   accessToken: string;
->>>>>>> ca0abc8 (feat(orders): the order read stops handing out the customer block)
 }

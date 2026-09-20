@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "base_sha": "a81da55b6fee220ed74e016e882b731b86a8e410",
+  "ours_sha": "a59fee16090f29212328ab72093715e424798a3c",
+  "theirs_sha": "5ac704666a3edfc0f729d46f8fc2d74f0709e1db",
+  "entries": [
+    {
+      "path": "drizzle/meta/_journal.json",
+      "base_oid": "d81e9d8202666017b736fbaff691cecc722879fd",
+      "ours_oid": "c85c92ecdde7a9c137e1165340e9f384a3100e27",
+      "theirs_oid": "2390c9dd36969618c4db817f047e94e738909712",
+      "base_path": "drizzle/meta/_journal.json.base",
+      "ours_path": "drizzle/meta/_journal.json.ours",
+      "theirs_path": "drizzle/meta/_journal.json.theirs",
+      "hunks": [
+        "<<<<<<< HEAD\n      \"idx\": 5,\n      \"version\": \"7\",\n      \"when\": 1789855087555,\n      \"tag\": \"0005_shop_facts\",\n=======\n      \"idx\": 6,\n      \"version\": \"7\",\n      \"when\": 1790000000000,\n      \"tag\": \"0006_order_access_token\",\n>>>>>>> ca0abc8 (feat(orders): the order read stops handing out the customer block)\n"
+      ]
+    },
+    {
+      "path": "src/lib/order-service.ts",
+      "base_oid": "d512d569a5fca8c9a99703be4661ac064446fa64",
+      "ours_oid": "e7b024cc0ac7beafd137ecc69cd8166e7e90f218",
+      "theirs_oid": "5db9930b19ca92e4369a06738d7fc2a4a0ab1aca",
+      "base_path": "src/lib/order-service.ts.base",
+      "ours_path": "src/lib/order-service.ts.ours",
+      "theirs_path": "src/lib/order-service.ts.theirs",
+      "hunks": [
+        "<<<<<<< HEAD\nimport { loadShopRules } from './shop-rules.js';\n=======\nimport { secretsMatch } from './secrets.js';\n>>>>>>> ca0abc8 (feat(orders): the order read stops handing out the customer block)\n"
+      ]
+    },
+    {
+      "path": "src/types.ts",
+      "base_oid": "e4292ebd74fc13fee08fec77b9e6349dc972ffbc",
+      "ours_oid": "1cb7e754e9320f74569c0648b52e72caa93f3ec7",
+      "theirs_oid": "d3e38f314fa11bafd0f63097b690a6c8aa4e57fc",
+      "base_path": "src/types.ts.base",
+      "ours_path": "src/types.ts.ours",
+      "theirs_path": "src/types.ts.theirs",
+      "hunks": [
+        "<<<<<<< HEAD\n * The legal notice (Impressum) facts `GET /api/shop` serves, § 5 DDG.\n *\n * Every one of them may be `null`: none appears in any document this\n * repository can read, and an invented legal name would be worse than a gap\n * the app can name. `complete` and `missing` say which, so the Impressum page\n * can render what is known and say what is not — and so `/api/health` can\n * report the gap to a deploy. `vatId` and the register fields are OMITTED\n * rather than null when unset, because for an Einzelunternehmen they normally\n * do not apply at all.\n */\nexport interface ShopLegal {\n  ownerName: string | null;\n  legalForm: string | null;\n  email: string | null;\n  vatId?: string;\n  registerCourt?: string;\n  registerNumber?: string;\n  /** `ownerName` and `email` are both set. */\n  complete: boolean;\n  /** e.g. `[\"legalOwnerName\", \"email\"]`. */\n  missing: string[];\n=======\n * The `POST /api/orders` response.\n *\n * `accessToken` is returned HERE and nowhere else — this is the one moment the\n * capability from D3 is handed out. It is deliberately not a field of `Order`:\n * `Order` is read back by `GET /api/orders/:id`, by the kitchen board and by\n * the payment result pages, and a secret on that shape would be re-served on\n * every one of them.\n */\nexport interface CreatedOrder {\n  order: Order;\n  accessToken: string;\n>>>>>>> ca0abc8 (feat(orders): the order read stops handing out the customer block)\n"
+      ]
+    }
+  ]
+}

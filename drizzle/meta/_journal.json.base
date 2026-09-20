@@ -36,20 +36,6 @@
       "when": 1789853774078,
       "tag": "0004_dataset_seeds",
       "breakpoints": true
-    },
-    {
-<<<<<<< HEAD
-      "idx": 5,
-      "version": "7",
-      "when": 1789855087555,
-      "tag": "0005_shop_facts",
-=======
-      "idx": 6,
-      "version": "7",
-      "when": 1790000000000,
-      "tag": "0006_order_access_token",
->>>>>>> ca0abc8 (feat(orders): the order read stops handing out the customer block)
-      "breakpoints": true
     }
   ]
 }
