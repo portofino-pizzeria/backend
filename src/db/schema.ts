@@ -133,12 +133,40 @@ export const orders = pgTable('orders', {
   paymentReference: text('payment_reference'),
   paidAt: timestamp('paid_at', { withTimezone: true }),
 
+  // When the owner erased this order's customer block on a data-subject
+  // request (Art. 17 DSGVO) — see `forgetOrder` in lib/personal-data.ts.
+  //
+  // NOT set by the retention sweep's six-month pass. That pass clears the
+  // phone, address and note and keeps the name, which is minimisation, not
+  // erasure; stamping it here would make the column lie about what happened.
+  personalDataErasedAt: timestamp('personal_data_erased_at', {
+    withTimezone: true,
+  }),
+
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
+}, (t) => ({
+  // Both retention passes scan by age; the kitchen board's
+  // `order by created_at desc` gets this for free.
+  createdAtIdx: index('orders_created_at_idx').on(t.createdAt),
+}));
+
+// "This sweep ran, and when." The shape `dataset_seeds` established for that
+// question — deliberately a SEPARATE table, because `dataset_seeds`' contract
+// is scoped to the menu and shop bootstraps and a delete sweep must not be
+// coupled to the seeding path.
+//
+// It is what makes "daily" mean *at most once per period* rather than *once per
+// timer tick*: App Runner restarts this process on every merge to master, which
+// resets any in-process interval, and runs up to 25 instances, each of which
+// would otherwise fire its own.
+export const retentionRuns = pgTable('retention_runs', {
+  name: text('name').primaryKey(), // e.g. "orders"
+  lastRunAt: timestamp('last_run_at', { withTimezone: true }).notNull(),
 });
 
 // Line items, snapshotted at order time (name, variant label and unitPrice

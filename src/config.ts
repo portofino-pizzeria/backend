@@ -6,6 +6,21 @@ function env(key: string, fallback = ''): string {
   return process.env[key]?.trim() || fallback;
 }
 
+/**
+ * A whole number of periods, or the default.
+ *
+ * Deliberately strict and deliberately silent about it in only one direction:
+ * a misspelt or non-numeric retention period falls back to the documented
+ * default rather than to `NaN`, which would make every age comparison false
+ * and silently disable the sweep. `0` is rejected for the same reason in
+ * reverse — a zero contact period would clear every order's phone number the
+ * first time the sweep ran.
+ */
+export function positiveIntFromEnv(key: string, fallback: number): number {
+  const parsed = Number(env(key));
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 const port = Number(env('PORT', '4000'));
 
 /**
@@ -85,6 +100,33 @@ export const config = {
   // write is REFUSED, with no opt-out at all — see `requireOwnerAuth` in
   // routes/admin-menu.ts. Set it to enable the editor.
   ownerMenuToken: env('OWNER_MENU_TOKEN'),
+
+  /**
+   * How long order data is kept (decision D4). Every value is configurable
+   * because only one of them is a technical decision.
+   *
+   * - `contactMonths` (6) — after this, `customer_phone`, `customer_address`
+   *   and `customer_notes` are overwritten with NULL. Long enough for a
+   *   delivery dispute or a chargeback; none of it belongs in a tax record.
+   * - `orderYears` (10) — after this the order, its lines and the customer
+   *   NAME are deleted outright. §147 AO / §257 HGB. **The exact period is the
+   *   owner's tax advisor's call**, which is why it is a value and not a
+   *   constant; it defaults to the LONGER reading because keeping a record too
+   *   long is recoverable and deleting it early is not.
+   * - `sweepIntervalHours` (24) — the floor between two sweeps, enforced by
+   *   the `retention_runs` marker rather than by a timer, so a restart-heavy
+   *   deploy model makes the sweep run at most this often rather than never.
+   *
+   * Deleting a column is not deleting the data: Aurora's automated backups
+   * retain 7 days (`infra/database.tf`), so a NULLed phone number stays
+   * recoverable from a backup for up to a week after the sweep. The privacy
+   * policy has to SAY that rather than imply an instant deletion.
+   */
+  retention: {
+    contactMonths: positiveIntFromEnv('RETENTION_CONTACT_MONTHS', 6),
+    orderYears: positiveIntFromEnv('RETENTION_ORDER_YEARS', 10),
+    sweepIntervalHours: positiveIntFromEnv('RETENTION_SWEEP_INTERVAL_HOURS', 24),
+  },
 
   // Domain constants. Money is always an integer number of cents.
   currency: 'EUR',
