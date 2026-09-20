@@ -8,8 +8,13 @@
 // writes to the menu. The harness truncates every public table before each
 // test, so each test starts from a fresh, empty database.
 
+import { existsSync, readFileSync } from 'node:fs';
+import { posix } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
+import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { db } from '../src/db/client.js';
@@ -18,6 +23,7 @@ import {
   checkReseedArgs,
   FORCE_FLAG,
   PRODUCTION_FLAG,
+  reseedCommand,
 } from '../src/db/reseed.js';
 import {
   allergenLegend,
@@ -125,6 +131,34 @@ describe('seedMenu() — the menu is seeded once per database', () => {
     expect(await tableCounts()).toMatchObject({ items: dataset.items.length });
   });
 
+  it('adopts a menu the owner emptied before the marker existed', async () => {
+    // A pre-marker database (today's production) whose owner deleted every
+    // dish in the editor. Deleting a dish never touches the allergen legend,
+    // and the editor refuses to delete a category that still holds dishes —
+    // so both tables survive an emptied menu, and the database has plainly
+    // had a menu even though `menu_items` is empty.
+    await seedMenu();
+    await db.delete(datasetSeeds);
+    await db.delete(menuItemVariants);
+    await db.delete(menuItems);
+
+    const before = await tableCounts();
+    expect(before.items).toBe(0);
+    expect(before.categories).toBeGreaterThan(0);
+    expect(before.legend).toBeGreaterThan(0);
+
+    // What the next deploy does. Deciding "fresh database" from `menu_items`
+    // alone would send the loader at primary keys that already exist: the
+    // transaction would abort on the first legend row and every one of
+    // `initDatabase`'s twenty boot attempts would fail the same way.
+    const reported = await seedMenu();
+
+    expect(reported).toBe(0);
+    expect(await menuMarker()).toBeDefined();
+    // And the captured menu is NOT brought back over the owner's decision.
+    expect((await tableCounts()).items).toBe(0);
+  });
+
   it('does not bring the menu back after the owner deleted every item', async () => {
     await seedMenu();
     await db.delete(menuItemVariants);
@@ -146,6 +180,29 @@ describe('seedMenu() — the menu is seeded once per database', () => {
     expect(a).toBe(dataset.items.length);
     expect(b).toBe(dataset.items.length);
     expect((await tableCounts()).items).toBe(dataset.items.length);
+  });
+});
+
+describe("the deploy guard's seed marker", () => {
+  it('still names a migration that exists', () => {
+    // `.github/workflows/deploy.yml` refuses to ship a commit that lacks this
+    // file, because lacking it means "this code reseeds the menu on every
+    // boot". The path is a stand-in for a property of the CODE, and nothing
+    // else pins it: `npm run db:generate` rewrites `drizzle/`, and a squash or
+    // renumber would remove it. The workflow does check `origin/master` first
+    // and reports its own marker going missing as a repo-shape change rather
+    // than as a rollback — but only at deploy time, on master, after the merge.
+    // This moves that failure into the pull request that renumbers.
+    const marker = fileURLToPath(
+      new URL('../drizzle/0004_dataset_seeds.sql', import.meta.url),
+    );
+    expect(
+      existsSync(marker),
+      'drizzle/0004_dataset_seeds.sql is gone. It is the marker ' +
+        '.github/workflows/deploy.yml uses to tell pre-seed-marker code from ' +
+        'current code — update `seed_marker` there and the references in ' +
+        'README.md to whatever now carries the seed-once behaviour.',
+    ).toBe(true);
   });
 });
 
@@ -197,5 +254,84 @@ describe('checkReseedArgs() — the guard on `npm run db:reseed`', () => {
     expect(checkReseedArgs([FORCE_FLAG], 'development')).toEqual({ ok: true });
     expect(checkReseedArgs([FORCE_FLAG], undefined)).toEqual({ ok: true });
     expect(checkReseedArgs([FORCE_FLAG], 'test')).toEqual({ ok: true });
+  });
+
+  it('points db:reseed:dist at the file the build actually emits', () => {
+    // `reseedCommand()` is a pure string, and until CI gained a build step
+    // nothing anywhere produced `dist/` — so the one reseed spelling that
+    // works inside the container was asserted by prose alone. This pins the
+    // script against the build config that decides where the file lands, and
+    // needs no build to do it.
+    const repoRoot = new URL('../', import.meta.url);
+    const read = (name: string): string =>
+      readFileSync(fileURLToPath(new URL(name, repoRoot)), 'utf8');
+
+    const pkg = JSON.parse(read('package.json')) as {
+      scripts: Record<string, string>;
+    };
+    // tsconfig.build.json is JSONC — comments today, and a trailing comma or
+    // a block comment is legal there tomorrow. Use TypeScript's own reader
+    // rather than a regex, so this test fails on the thing it is about and not
+    // on a comment style.
+    const parsed = ts.parseConfigFileTextToJson(
+      'tsconfig.build.json',
+      read('tsconfig.build.json'),
+    );
+    expect(parsed.error, JSON.stringify(parsed.error)).toBeUndefined();
+    const buildConfig = parsed.config as {
+      compilerOptions: { rootDir: string; outDir: string };
+    };
+
+    const { rootDir, outDir } = buildConfig.compilerOptions;
+    const emitted = posix.join(
+      outDir,
+      posix.relative(rootDir, 'src/db/reseed.ts').replace(/\.ts$/, '.js'),
+    );
+    expect(pkg.scripts['db:reseed:dist']).toBe(`node ${emitted}`);
+
+    // And when a build HAS run — always, in CI, which now builds before it
+    // tests — the file the script names is really there.
+    if (existsSync(fileURLToPath(new URL(outDir, repoRoot)))) {
+      expect(existsSync(fileURLToPath(new URL(emitted, repoRoot)))).toBe(true);
+    }
+  });
+
+  it('names the command that can actually run where it refused', () => {
+    // The deployed image has no `tsx`, no `src/` and no `.env`, so the
+    // `db:reseed` spelling cannot run there; `db:reseed:dist` runs the
+    // compiled file that IS in the image.
+    expect(reseedCommand('production')).toBe('npm run db:reseed:dist --');
+    expect(reseedCommand('development')).toBe('npm run db:reseed --');
+    expect(reseedCommand(undefined)).toBe('npm run db:reseed --');
+
+    const inProduction = checkReseedArgs([], 'production');
+    expect(inProduction.ok).toBe(false);
+    if (!inProduction.ok) {
+      // Both flags, because typing only --force there is refused by the very
+      // next gate — a refusal must not name a command that is itself refused.
+      expect(inProduction.message).toContain(
+        `npm run db:reseed:dist -- ${FORCE_FLAG} ${PRODUCTION_FLAG}`,
+      );
+      // …and does not point at the two `tsx` scripts that are not in the image.
+      expect(inProduction.message).not.toContain('npm run db:seed');
+    }
+
+    // The second gate — the message an operator in the container actually
+    // reaches, having typed the first one's suggestion.
+    const forceOnly = checkReseedArgs([FORCE_FLAG], 'production');
+    expect(forceOnly.ok).toBe(false);
+    if (!forceOnly.ok) {
+      expect(forceOnly.message).toContain(
+        `npm run db:reseed:dist -- ${FORCE_FLAG} ${PRODUCTION_FLAG}`,
+      );
+      expect(forceOnly.message).not.toContain('npm run db:reseed --');
+    }
+
+    const locally = checkReseedArgs([], 'development');
+    expect(locally.ok).toBe(false);
+    if (!locally.ok) {
+      expect(locally.message).toContain('npm run db:reseed -- --force');
+      expect(locally.message).toContain('npm run db:seed');
+    }
   });
 });

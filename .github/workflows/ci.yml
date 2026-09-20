@@ -92,6 +92,17 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # `npm run typecheck` does not EMIT, so until this step existed nothing
+      # in CI ever produced `dist/`. The only build was `docker build` in
+      # deploy.yml — which the retag path skips entirely — so a broken emit
+      # (a `rootDir`/`outDir` change, a moved file) could reach production as
+      # `Cannot find module '/app/dist/…'` with every check green. That matters
+      # for more than `node dist/index.js`: `npm run db:reseed:dist`, the one
+      # reseed spelling that runs inside the container, is a path into `dist/`
+      # too.
+      - name: Build (proves the emit, which typecheck does not)
+        run: npm run build
+
       # No separate migration step, deliberately. `test/global-setup.ts` creates
       # the database, drops the `public` and `drizzle` schemas, and re-applies
       # `drizzle/*.sql` from zero on every run. A `npm run db:migrate` here

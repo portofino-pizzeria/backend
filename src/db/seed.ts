@@ -125,9 +125,72 @@ async function lockMenuDataset(tx: Tx): Promise<void> {
   );
 }
 
+/** How many rows each of the four menu tables holds. */
+interface MenuRowCounts {
+  legend: number;
+  categories: number;
+  items: number;
+  variants: number;
+}
+
+/**
+ * The four tables the bootstrap writes — asked about together, because
+ * "has this database ever had a menu?" is not the same question as "does it
+ * have dishes right now".
+ *
+ * `menu_items` alone is the wrong test. Deleting a dish in the editor leaves
+ * its category heading and every `allergen_legend` row untouched (the editor
+ * refuses to delete a category that still holds dishes, and deleting a dish
+ * never touches the legend at all), so an owner who emptied the menu leaves a
+ * database with zero items and a full legend. Treating that as a FRESH
+ * database sends `insertDataset` at primary keys that already exist: the
+ * transaction aborts on the first legend row, every one of `initDatabase`'s
+ * twenty attempts fails the same way, and the boot gives up — without ever
+ * reaching `seedShop()` or `refreshLegalStatus()`, so the shop then refuses
+ * every order with a 503 it has no rules to answer. The database this whole
+ * change exists to protect is the one that would break.
+ */
+async function countMenuRows(tx: Tx): Promise<MenuRowCounts> {
+  const [legend] = await tx.select({ n: count() }).from(allergenLegend);
+  const [categories] = await tx.select({ n: count() }).from(menuCategories);
+  const [items] = await tx.select({ n: count() }).from(menuItems);
+  const [variants] = await tx.select({ n: count() }).from(menuItemVariants);
+  return {
+    legend: Number(legend?.n ?? 0),
+    categories: Number(categories?.n ?? 0),
+    items: Number(items?.n ?? 0),
+    variants: Number(variants?.n ?? 0),
+  };
+}
+
+/**
+ * Just the live item count, for the marker path.
+ *
+ * A database that already carries the marker is the common case — every boot,
+ * every scale-out, every restart — and it needs one number, for the log line
+ * and the return value. Charging it the four counts of `countMenuRows` would
+ * make the frequent path pay for a question only the once-per-database path
+ * asks.
+ */
 async function countMenuItems(tx: Tx): Promise<number> {
   const [row] = await tx.select({ n: count() }).from(menuItems);
   return Number(row?.n ?? 0);
+}
+
+/** True when ANY menu table holds a row — see `countMenuRows`. */
+function hasMenuRows(rows: MenuRowCounts): boolean {
+  return rows.legend + rows.categories + rows.items + rows.variants > 0;
+}
+
+/** "12 items", or what is left when the owner has deleted every dish. */
+function describeMenuRows(rows: MenuRowCounts): string {
+  if (rows.items > 0) return `${rows.items} items`;
+  const remains = [
+    rows.categories > 0 ? `${rows.categories} categories` : null,
+    rows.variants > 0 ? `${rows.variants} variants` : null,
+    rows.legend > 0 ? `${rows.legend} allergen legend codes` : null,
+  ].filter((part): part is string => part !== null);
+  return `no items, ${remains.join(' and ')}`;
 }
 
 /**
@@ -217,7 +280,7 @@ function logLoaded(heading: string, summary: SeedSummary): void {
 
 type SeedOutcome =
   | { kind: 'loaded'; items: number; summary: SeedSummary }
-  | { kind: 'adopted'; items: number }
+  | { kind: 'adopted'; rows: MenuRowCounts }
   | { kind: 'owner-authored'; items: number; seededAt: Date };
 
 /**
@@ -230,15 +293,27 @@ type SeedOutcome =
  * restart. Now the database is the source of truth as soon as it has a menu,
  * and a `menu` row in `dataset_seeds` records that it has had one:
  *
- *  - no marker and no items (a fresh database) → load the dataset and write
- *    the marker;
- *  - no marker but items present (every database that predates the marker)
- *    → write the marker and nothing else;
+ *  - no marker and not one row in any of the four menu tables (a genuinely
+ *    fresh database) → load the dataset and write the marker;
+ *  - no marker but menu rows present (every database that predates the
+ *    marker) → write the marker and nothing else. "Menu rows" is all four
+ *    tables, not `menu_items`: an owner who deleted every dish still has the
+ *    category headings and the allergen legend, and that database has plainly
+ *    had a menu — see `countMenuRows`;
  *  - a marker → write nothing, even when the owner has since deleted every
  *    item. An empty menu is then the owner's doing, and bringing the captured
  *    menu back would be the same erasure in reverse. That is also why the
  *    marker records only *that* the menu was seeded, never which version of
  *    the file: a version check would reseed on the first edit to the file.
+ *
+ * One pre-marker state is genuinely undecidable and is NOT covered: a database
+ * with no marker and all four menu tables empty. The editor can reach it — an
+ * empty category may be deleted, and so may a legend row — and from the
+ * outside it is identical to a database that has never been seeded. Such a
+ * database is treated as fresh and loaded, so an owner who emptied the menu
+ * completely BEFORE the marker existed gets the captured menu back once. After
+ * the marker it cannot happen: the marker, not the row count, is what says the
+ * menu has been seeded.
  *
  * All of it runs in one transaction under an advisory lock
  * (`lockMenuDataset`), so a reader never observes a half-loaded menu and two
@@ -262,15 +337,19 @@ export async function seedMenu(): Promise<number> {
       .select()
       .from(datasetSeeds)
       .where(eq(datasetSeeds.name, MENU_DATASET));
-    const existingItems = await countMenuItems(tx);
-
     if (marker) {
-      return { kind: 'owner-authored', items: existingItems, seededAt: marker.seededAt };
+      return {
+        kind: 'owner-authored',
+        items: await countMenuItems(tx),
+        seededAt: marker.seededAt,
+      };
     }
 
-    if (existingItems > 0) {
+    const rows = await countMenuRows(tx);
+
+    if (hasMenuRows(rows)) {
       await tx.insert(datasetSeeds).values({ name: MENU_DATASET });
-      return { kind: 'adopted', items: existingItems };
+      return { kind: 'adopted', rows };
     }
 
     const dataset = loadMenuDataset();
@@ -285,7 +364,7 @@ export async function seedMenu(): Promise<number> {
       break;
     case 'adopted':
       console.log(
-        `Menu already present (${outcome.items} items) — not reseeding. ` +
+        `Menu already present (${describeMenuRows(outcome.rows)}) — not reseeding. ` +
           'Recorded it as seeded; from now on the database is the menu.',
       );
       break;
@@ -297,7 +376,7 @@ export async function seedMenu(): Promise<number> {
       break;
   }
 
-  return outcome.items;
+  return outcome.kind === 'adopted' ? outcome.rows.items : outcome.items;
 }
 
 /**

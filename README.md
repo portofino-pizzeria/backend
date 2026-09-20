@@ -85,6 +85,23 @@ correction ships instead. To throw the local menu away and reload the file,
 run `npm run db:reseed -- --force`; it erases every editor change, and with
 `NODE_ENV=production` it also wants `--i-know-this-erases-owner-edits`.
 
+In a **deployed container** the spelling is `npm run db:reseed:dist` — the
+runtime image carries the compiled tree only (`npm prune --omit=dev` removes
+`tsx`, `src/` is never copied into the runtime stage, and `.env` is in
+`.dockerignore`), so the `db:reseed` script cannot run there at all. Both
+scripts reach the same guard, and a refusal names whichever spelling works
+where you typed it:
+
+```bash
+npm run db:reseed:dist -- --force --i-know-this-erases-owner-edits
+```
+
+That script runs the compiled file, so locally it needs `npm run build` first —
+without one it fails with `Cannot find module`, not with the guard's refusal.
+In the image the build has already happened. CI builds too (`ci.yml`), which is
+what keeps the path in that script honest: `npm run typecheck` does not emit, so
+before that step nothing in CI ever produced `dist/` at all.
+
 The **restaurant's own facts** — address, phone number, weekly hours, the
 public-holiday window, the delivery cut-off and the special days — are rows as
 well (`shop_profile`, `shop_weekly_hours`, `shop_special_days`), seeded the
@@ -225,7 +242,12 @@ What still stands between a change and the database:
   **before** the push whenever a migration could run — the live commit is
   unknown, or `drizzle/` differs between it and the target — and the deploy
   refuses to continue until it is `available`. That snapshot is the restore
-  point; the CI role can create snapshots and never delete one.
+  point; the CI role can create snapshots and never delete one;
+- a dispatch naming a commit older than `drizzle/0004_dataset_seeds.sql` is
+  refused unless `i_know_this_reseeds_the_menu` is ticked. Such a commit
+  reloads `data/menu.json` over the owner's menu on every boot, and the
+  snapshot above is no protection against it — that erasure happens *after* a
+  restore, not before it.
 
 The deploy job still runs through the `production-backend` GitHub Environment —
 with no reviewer — for two reasons. Its deployment-branch policy admits `master`
@@ -275,7 +297,10 @@ the new schema. Treat that case as a forward fix — or, when the data itself ha
 to go back, restore the pre-deploy snapshot below. Rolling back to a commit
 older than `drizzle/0004_dataset_seeds.sql` is worse than that: its boot
 reloads `data/menu.json` over the owner's menu (see "The database restore
-point").
+point"). The workflow refuses such a dispatch unless
+**`i_know_this_reseeds_the_menu`** is ticked, so the one case that needs it —
+step 1 of the restore below — stays open and nothing else can take that path by
+accident.
 
 ### The database restore point
 
@@ -304,7 +329,9 @@ Two limits on what that protects, both outside this workflow:
   `drizzle/0004_dataset_seeds.sql` still deletes the four menu tables and
   reloads `data/menu.json` on every boot: running such a commit — a rollback,
   or the step-1 dispatch below — erases every edit made in the owner's menu
-  editor, snapshot or not.
+  editor, snapshot or not. The deploy workflow now refuses to ship a commit
+  that predates that migration unless `i_know_this_reseeds_the_menu` is ticked
+  on the dispatch, which leaves step 1 available and closes the accident.
 
 The CI role may create snapshots under the prefix and never delete one
 (`../infra/github-oidc.tf`, `SnapshotProductionDbBeforeDeploy`). They do not
@@ -335,7 +362,10 @@ matters:
    back as it was in the snapshot; owner edits made after it are lost with
    everything else written after it. If the sha you dispatch predates
    `drizzle/0004_dataset_seeds.sql`, its boots in steps 1 and 5 also reload
-   `data/menu.json` over the restored menu (see the limits above).
+   `data/menu.json` over the restored menu (see the limits above) — and the
+   workflow will refuse the dispatch until you tick
+   **`i_know_this_reseeds_the_menu`**, which is the acknowledgement that you
+   are accepting exactly that.
 2. **Stop traffic until step 5.** Renaming a cluster does not close the
    connections already open to it: each backend instance holds a pool
    (`src/db/client.ts`), so orders placed during the restore would land on the

@@ -35,3 +35,7 @@ and a boot that finds the menu already seeded logs that and writes nothing.
 without `--force`, and with `NODE_ENV=production` it also requires
 `--i-know-this-erases-owner-edits`. It is for a local or staging database, not
 a way to ship a correction.
+
+Inside a deployed container the script is `npm run db:reseed:dist` — the image
+has the compiled tree and neither `tsx`, `src/` nor `.env`, so the `db:reseed`
+spelling cannot run there. Same guard, same two flags.

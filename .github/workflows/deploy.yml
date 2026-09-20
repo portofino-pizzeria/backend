@@ -139,6 +139,17 @@ on:
         required: false
         type: boolean
         default: false
+      i_know_this_reseeds_the_menu:
+        description: >-
+          Required to deploy a commit that predates
+          drizzle/0004_dataset_seeds.sql. Such a commit reloads data/menu.json
+          over the live menu on EVERY boot, erasing every edit the owner made
+          in the menu editor — a database snapshot does not protect against it,
+          because the erasure happens after the restore. Tick it only for the
+          step-1 dispatch of the restore procedure in README.md.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -179,6 +190,7 @@ jobs:
           # is attacker-shaped text even on a private repo.
           REQUESTED_SHA: ${{ inputs.sha }}
           DEFAULT_SHA: ${{ github.sha }}
+          ALLOW_MENU_RESEED: ${{ inputs.i_know_this_reseeds_the_menu }}
         run: |
           set -euo pipefail
           if [ -z "${REQUESTED_SHA}" ]; then
@@ -212,6 +224,66 @@ jobs:
             echo "::error::apply its drizzle/ migrations to production Aurora unreviewed."
             exit 1
           fi
+          # The menu is the owner's from `drizzle/0004_dataset_seeds.sql`
+          # onward: from that commit `seedMenu()` writes only into a database
+          # that has never had a menu. BEFORE it, every boot deleted the four
+          # menu tables and reloaded `data/menu.json`, so shipping such a commit
+          # erases every edit the owner has made in the menu editor — on the
+          # first boot, and again on every scale-out and restart until it is
+          # replaced. The pre-deploy snapshot below does not cover it: the
+          # erasure happens after a restore, not before it.
+          #
+          # A push to master can never select one (master's tip contains the
+          # migration), so this only ever meets a dispatch that names an older
+          # sha — the step-1 rollback of the restore procedure in README.md,
+          # which legitimately needs it. Hence an acknowledgement rather than a
+          # refusal: the same shape as the two flags on `npm run db:reseed`.
+          seed_marker='drizzle/0004_dataset_seeds.sql'
+
+          # The marker is a FILE PATH standing in for a property of the CODE,
+          # and nothing in the repo pins that path: `npm run db:generate`
+          # rewrites `drizzle/`, and a squash or renumber could remove it. Were
+          # that to happen, the check below would fail at master's own tip — and
+          # on a `push` there is no box to tick, so EVERY deploy would fail
+          # permanently, with an error message saying the sha "predates" a
+          # migration, which would be false and would point the reader at the
+          # wrong problem. So ask master first and report a repo-shape change as
+          # itself.
+          if ! git cat-file -e "origin/master:${seed_marker}" 2>/dev/null; then
+            echo "::error::${seed_marker} is no longer present at origin/master, so this guard can"
+            echo "::error::no longer tell a pre-seed-marker commit from a current one. This is NOT an"
+            echo "::error::attempted rollback: the marker path needs updating here and in README.md to"
+            echo "::error::whatever now carries the seed-once behaviour."
+            exit 1
+          fi
+
+          if git cat-file -e "${sha}:${seed_marker}" 2>/dev/null; then
+            :
+          elif [ "${ALLOW_MENU_RESEED}" = "true" ]; then
+            echo "::warning::${sha} predates ${seed_marker}: every boot of it reloads data/menu.json"
+            echo "::warning::over the live menu, erasing every edit made in the owner's menu editor."
+            echo "::warning::Deploying it anyway because i_know_this_reseeds_the_menu was ticked."
+            # In the run summary as well as the log: months later, this is the
+            # one fact that explains why the owner's menu reverted, and a job
+            # log is not where anyone looks for that.
+            {
+              echo "### Menu erasure acknowledged"
+              echo
+              echo "\`${sha}\` predates \`${seed_marker}\`, so every boot of it reloads"
+              echo "\`data/menu.json\` over the live menu. Deployed anyway:"
+              echo "\`i_know_this_reseeds_the_menu\` was ticked on the dispatch."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::${sha} predates ${seed_marker}. Every boot of that code deletes the four"
+            echo "::error::menu tables and reloads data/menu.json, so deploying it erases every edit the"
+            echo "::error::owner has made in the menu editor — on this deploy and on every scale-out and"
+            echo "::error::restart until it is replaced. A pre-deploy snapshot does not protect the menu:"
+            echo "::error::the erasure happens after a restore, not before it."
+            echo "::error::If that is really intended (the step-1 rollback in README.md is the one case),"
+            echo "::error::re-dispatch with i_know_this_reseeds_the_menu ticked."
+            exit 1
+          fi
+
           echo "Deploying commit ${sha}"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 

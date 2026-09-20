@@ -18,6 +18,7 @@
     "db:migrate": "tsx --env-file=.env src/db/migrate.ts",
     "db:seed": "tsx --env-file=.env src/db/seed.ts",
     "db:reseed": "tsx --env-file=.env src/db/reseed.ts",
+    "db:reseed:dist": "node dist/db/reseed.js",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down"
   },
