@@ -704,7 +704,6 @@ jobs:
           # rollback dispatch naming an older sha) it is a notice, so the
           # rollback path stays open. Sets `kitchen` for the summary.
           kitchen=""
-          health_body=""
           assert_kitchen_guard() {
             local body="" i
             for i in $(seq 1 20); do          # the same budget step 3 allows
@@ -715,7 +714,6 @@ jobs:
               body=""
               sleep 6
             done
-            health_body="${body}"
             if [ -z "${body}" ]; then
               echo "::error::Could not re-read ${health_url} as commit ${TARGET_SHA} to check the kitchen"
               echo "::error::guard's posture. The commit assertion passed moments ago, so this is a read"
@@ -761,52 +759,6 @@ jobs:
             echo "| Kitchen guard | \`kitchen: ${kitchen:-<not reported by this build>}\` |"
           }
 
-          # The legal notice, from the SAME body `assert_kitchen_guard` already
-          # retried until it was the target build. `legal` (src/lib/legal-status.ts)
-          # reads `complete` once the owner has supplied the Impressum facts,
-          # `incomplete` with `legalMissing` while any are absent, and `unknown`
-          # before that instance has read them.
-          #
-          # This only ever WARNS. A missing Impressum is the owner's to fix, not
-          # the deployment's: it blocks store submission and the website cutover,
-          # while failing development deploys over it would stop the very deploys
-          # that carry the editor the owner fills it in with. Sets `legal` for the
-          # summary.
-          legal=""
-          report_legal_notice() {
-            local missing=""
-            [ -n "${health_body}" ] || return 0
-
-            if [ "$(printf '%s' "${health_body}" | jq -r 'has("legal")')" != "true" ]; then
-              echo "::warning::${health_url} reports no 'legal' field, so whether the Impressum (§ 5 DDG) is"
-              echo "::warning::complete is UNKNOWN — this build predates the report."
-              return 0
-            fi
-
-            legal="$(printf '%s' "${health_body}" | jq -r '.legal')"
-            case "${legal}" in
-              complete)
-                echo "Verified: the Impressum is complete (legal: complete)."
-                ;;
-              incomplete)
-                missing="$(printf '%s' "${health_body}" | jq -r '(.legalMissing // []) | join(", ")')"
-                echo "::warning::${health_url} reports legal: incomplete — the Impressum is missing: ${missing:-<not reported>}."
-                echo "::warning::A German business app or website must carry a complete legal notice (§ 5 DDG); an"
-                echo "::warning::incomplete one can draw a warning letter (Abmahnung). The owner fills the fields in"
-                echo "::warning::under „Impressum“ in the editor. Store submission and the website cutover stay blocked"
-                echo "::warning::until this reads 'complete'. The deploy itself is NOT failed by this."
-                ;;
-              *)
-                echo "::warning::${health_url} reports legal: '${legal}' — whether the Impressum is complete is"
-                echo "::warning::UNKNOWN (the serving instance had not read it yet). Re-check ${health_url} in a minute."
-                ;;
-            esac
-          }
-
-          legal_summary_row() {
-            echo "| Impressum | \`legal: ${legal:-<not reported by this build>}\` |"
-          }
-
           # Returns the deployment operations that were not in the pre-push
           # snapshot, or exits non-zero if AWS could not be asked.
           #
@@ -834,7 +786,6 @@ jobs:
           # "verified", so the guard's posture is asserted on this path too.
           no_op_summary() {
             assert_kitchen_guard
-            report_legal_notice
             echo "No deployment was triggered: ${TARGET_SHA} is already live (identical image digest)."
             {
               echo "### Backend deploy — no-op"
@@ -845,7 +796,6 @@ jobs:
               echo "| | |"
               echo "|---|---|"
               kitchen_summary_row
-              legal_summary_row
             } >> "$GITHUB_STEP_SUMMARY"
           }
 
@@ -972,9 +922,6 @@ jobs:
           # values and on an unreadable body, notices only a genuine rollback.
           assert_kitchen_guard
 
-          # --- 5. The legal notice, reported but never fatal -------------------
-          report_legal_notice
-
           {
             echo "### Backend deploy — verified"
             echo ""
@@ -985,7 +932,6 @@ jobs:
             echo "| App Runner operation | \`${op_id}\` |"
             echo "| Health | [\`${health_url}\`](${health_url}) reports \`commit: ${TARGET_SHA}\` |"
             kitchen_summary_row
-            legal_summary_row
             echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"
           } >> "$GITHUB_STEP_SUMMARY"
 
