@@ -6,12 +6,11 @@
 // lib/menu-admin-service.ts for the four safety properties this surface has to
 // hold.
 
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { config } from '../config.js';
-import { badRequest, unauthorized } from '../lib/http-errors.js';
-import { secretsMatch } from '../lib/secrets.js';
+import { badRequest } from '../lib/http-errors.js';
+import { requireOwnerAuth } from '../lib/owner-auth.js';
 import {
   createCategory,
   createMenuItem,
@@ -25,39 +24,6 @@ import {
   updateMenuItem,
   upsertAllergen,
 } from '../lib/menu-admin-service.js';
-
-/**
- * The owner guard. **It fails CLOSED.**
- *
- * Decision D5 gave this surface its own credential and its own namespace: it
- * writes the allergens and prices a diner reads, so an unset `OWNER_MENU_TOKEN`
- * refuses every admin request instead of opening the editor to the whole
- * internet — a misconfigured deployment loses the editor, never the menu.
- *
- * When D5 was taken, the kitchen guard (`routes/kitchen.ts`) was the contrast:
- * it skipped its check entirely when `KITCHEN_TOKEN` was unset. It no longer
- * does — it fails closed the same way, and shares `secretsMatch` — so the two
- * guards now differ only in WHICH secret they check, which is what D5 was
- * actually about.
- */
-async function requireOwnerAuth(
-  req: FastifyRequest,
-  _reply: FastifyReply,
-): Promise<void> {
-  if (!config.ownerMenuToken) {
-    throw unauthorized(
-      'Der Speisekarten-Editor ist auf diesem Server nicht freigeschaltet ' +
-        '(OWNER_MENU_TOKEN ist nicht gesetzt). Änderungen an der Speisekarte werden ' +
-        'abgelehnt.',
-    );
-  }
-
-  const header = req.headers.authorization ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!token || !secretsMatch(token, config.ownerMenuToken)) {
-    throw unauthorized('Ungültiges Kennwort für den Speisekarten-Editor.');
-  }
-}
 
 // --- Body schemas ----------------------------------------------------------
 

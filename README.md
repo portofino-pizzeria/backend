@@ -14,6 +14,7 @@ Customer (consumed by the mobile app — contract mirrors `../mobile/src/lib`):
 | Method | Path | Purpose |
 |---|---|---|
 | `GET`  | `/api/menu` | Menu → `{ items }` |
+| `GET`  | `/api/shop` | Address, phone, printed hours, `deliveryUntil`, the live `status`, the `specialDays` of the next 30 days and the `legal` (Impressum) block. All of it from the rows the owner edits |
 | `POST` | `/api/orders` | Create order → `{ order }`. `customer.name`, `customer.phone` (≥ 6 digits) and `customer.address` are **required** — every order is a delivery. Refusals are `400` with a German message the checkout shows verbatim |
 | `GET`  | `/api/orders/:id` | Order (status polling) → `{ order }` |
 | `GET`  | `/api/payments/providers` | `{ stripe, paypal, mockFallback }` |
@@ -27,8 +28,29 @@ closed, see "The kitchen guard" below):
 | `GET`  | `/api/kitchen/orders?scope=active\|all` | List orders → `{ orders }` |
 | `POST` | `/api/kitchen/orders/:id/status` | `{ status }` → `{ order }` |
 
-Internal: `GET /api/health`, hosted checkout pages under `/checkout/*`, and
-`POST /webhooks/stripe`.
+Owner's editor (ours — Bearer `OWNER_MENU_TOKEN`, **required**; the same guard
+fails closed for both surfaces, `src/lib/owner-auth.ts`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `*`    | `/api/admin/menu/*` | The menu: items, categories, the allergen legend |
+| `GET`  | `/api/admin/shop` | The restaurant as the editor sees it → `AdminShop` (with `version` and `canUndo`) |
+| `PUT`  | `/api/admin/shop/profile` | Address and phone. `phoneE164` is derived on the server |
+| `PUT`  | `/api/admin/shop/hours` | All seven weekdays, the delivery cut-off and the holiday window, in one request |
+| `PUT`  | `/api/admin/shop/legal` | The Impressum facts. Needs `confirmed: true`, and is the only writer of `email` |
+| `POST` `PATCH` `DELETE` | `/api/admin/shop/special-days[/:id]` | Special days and holidays; a whole Urlaub (up to 62 days) is one request |
+| `POST` | `/api/admin/shop/preview` | What a diner would see if this draft were saved. Writes nothing |
+| `POST` | `/api/admin/shop/undo` | Restores the state before the most recent write. A second undo is a redo |
+
+Every shop write carries the `version` it was read at and is refused with
+`409` if someone else saved in between; every one of them bumps that version
+and records a whole-shop snapshot in `admin_changes`, which is what `undo`
+restores.
+
+Internal: `GET /api/health` (`commit`, `stripe`, `kitchen`, and `legal` /
+`legalMissing` — whether the Impressum is complete, served from an in-process
+cache so the health check never queries the database), hosted checkout pages
+under `/checkout/*`, and `POST /webhooks/stripe`.
 
 ## Order lifecycle
 
@@ -63,6 +85,17 @@ correction ships instead. To throw the local menu away and reload the file,
 run `npm run db:reseed -- --force`; it erases every editor change, and with
 `NODE_ENV=production` it also wants `--i-know-this-erases-owner-edits`.
 
+The **restaurant's own facts** — address, phone number, weekly hours, the
+public-holiday window, the delivery cut-off and the special days — are rows as
+well (`shop_profile`, `shop_weekly_hours`, `shop_special_days`), seeded the
+same way by `seedShop()` (`src/db/seed-shop.ts`) from the defaults in
+`src/lib/shop-defaults.ts`, and only into a database that has no
+`shop_profile` row. They used to be constants in `src/lib/shop.ts`; they belong
+to the owner's editor now (`/api/admin/shop/*`), so editing `shop-defaults.ts`
+changes nothing in a database that has been seeded. If the rows cannot be read
+at all, the order routes fail **closed** with a 503 rather than taking orders
+for a kitchen whose hours nobody knows.
+
 Then start the app in `../mobile` (`npm run web`) — it auto-targets
 `http://localhost:4000`.
 
@@ -84,9 +117,11 @@ For local dev, pick one in `.env`:
 
 With neither, the dashboard's token prompt can never succeed (the server is
 refusing, not checking), and the server says so at boot and in
-`GET /api/health` → `kitchen: "unconfigured"`. The owner's menu editor
-(`/api/admin/menu/*`, `OWNER_MENU_TOKEN`) fails closed the same way and has no
-opt-out at all.
+`GET /api/health` → `kitchen: "unconfigured"`. The owner's editor
+(`/api/admin/menu/*` and `/api/admin/shop/*`, both `OWNER_MENU_TOKEN`) fails
+closed the same way and has no opt-out at all — it writes the allergens and
+prices a diner reads, the opening hours the server enforces, and the address
+on the Impressum.
 
 ### Payments in dev
 

@@ -175,7 +175,7 @@ describe('Heiligabend and Silvester', () => {
     // 24 December 2025 is a Wednesday: the weekday opens at 12:00 as usual.
     const d = hoursOn(RULES, 2025, 12, 24);
     expect(d).toMatchObject({
-      special: 'Heiligabend: geöffnet bis 14:00 Uhr',
+      special: 'Heiligabend: geöffnet bis 14:00 Uhr, Lieferung bis 13:30 Uhr',
       pickup: { open: '12:00', close: '14:00' },
       delivery: { open: '12:00', close: '13:30' },
     });
@@ -197,6 +197,28 @@ describe('Heiligabend and Silvester', () => {
     expect(refusalFor('pickup', s)).toContain('Wir haben gerade geschlossen');
   });
 
+  it('the sentence diners read is composed from the label and the hours now enforced', () => {
+    // The owner's row carries the LABEL "Silvester" and a closing time. Move
+    // the closing time and the sentence moves with it — a stored sentence
+    // would still promise 18:00 in front of a door that shuts at 17:00 (D3).
+    const moved = {
+      ...RULES,
+      specialDays: RULES.specialDays.map((s) =>
+        s.monthDay === '12-31' ? { ...s, close: '17:00', deliveryUntil: '16:30' } : s,
+      ),
+    };
+    expect(hoursOn(moved, 2025, 12, 31).special).toBe(
+      'Silvester: geöffnet bis 17:00 Uhr, Lieferung bis 16:30 Uhr',
+    );
+    const closed = {
+      ...RULES,
+      specialDays: RULES.specialDays.map((s) =>
+        s.monthDay === '12-31' ? { ...s, closed: true, close: null, deliveryUntil: null } : s,
+      ),
+    };
+    expect(hoursOn(closed, 2025, 12, 31).special).toBe('Silvester: geschlossen');
+  });
+
   it('Heiligabend on a Tuesday stays a Ruhetag', () => {
     // 24 December 2024 is a Tuesday. A RECURRING row does not open a Ruhetag
     // while ruhetagBeatsHoliday is set — only a dated row, typed for that one
@@ -208,7 +230,7 @@ describe('Heiligabend and Silvester', () => {
   it('Silvester closes at 18:00 and delivers until 17:30', () => {
     // 31 December 2025 is a Wednesday.
     expect(hoursOn(RULES, 2025, 12, 31)).toMatchObject({
-      special: 'Silvester: geöffnet bis 18:00 Uhr',
+      special: 'Silvester: geöffnet bis 18:00 Uhr, Lieferung bis 17:30 Uhr',
       pickup: { open: '12:00', close: '18:00' },
       delivery: { open: '12:00', close: '17:30' },
     });
@@ -311,8 +333,8 @@ describe('GET /api/shop', () => {
       .inject({ method: 'GET', url: '/api/shop' })
       .then((res) => res.json());
     expect(body.specialDays.map((d: { date: string; special: string }) => [d.date, d.special])).toEqual([
-      ['2025-12-24', 'Heiligabend: geöffnet bis 14:00 Uhr'],
-      ['2025-12-31', 'Silvester: geöffnet bis 18:00 Uhr'],
+      ['2025-12-24', 'Heiligabend: geöffnet bis 14:00 Uhr, Lieferung bis 13:30 Uhr'],
+      ['2025-12-31', 'Silvester: geöffnet bis 18:00 Uhr, Lieferung bis 17:30 Uhr'],
     ]);
   });
 });

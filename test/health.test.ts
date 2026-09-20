@@ -6,6 +6,9 @@
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { db } from '../src/db/client.js';
+import { shopProfile } from '../src/db/schema.js';
+import { refreshLegalStatus } from '../src/lib/legal-status.js';
 import { createTestApp } from './support/app';
 import { withConfig } from './support/config';
 
@@ -88,6 +91,62 @@ describe('GET /api/health', () => {
         const res = await app.inject({ method: 'GET', url: '/api/health' });
         expect(res.body).not.toContain('kuechen-geheimnis');
       });
+    });
+  });
+
+  // `legal` reports whether the Impressum (§ 5 DDG) is complete, so a deploy
+  // can warn about a public app that carries an incomplete one. It is served
+  // from an in-process cache and NEVER from a query — this route is App
+  // Runner's health check and answers before the database is up at all.
+  describe('the legal field', () => {
+    it('reads "unknown" before anything has been loaded', async () => {
+      // `test/support/setup.ts` resets the cache before every test, which is
+      // the state a freshly started process is in: it has not read the
+      // database yet, and it says so rather than guessing.
+      expect((await getHealth()).legal).toBe('unknown');
+    });
+
+    it('reads "incomplete" and names what is missing', async () => {
+      await refreshLegalStatus();
+      const body = await getHealth();
+      expect(body.legal).toBe('incomplete');
+      expect(body.legalMissing).toEqual(['legalOwnerName', 'email']);
+    });
+
+    it('reads "complete" once the owner has supplied the facts', async () => {
+      await db
+        .update(shopProfile)
+        .set({ legalOwnerName: 'Mario Rossi', email: 'info@portofino-essen.de' });
+      await refreshLegalStatus();
+
+      const body = await getHealth();
+      expect(body.legal).toBe('complete');
+      expect(body).not.toHaveProperty('legalMissing');
+    });
+
+    it('still answers 200 when the shop rules cannot be read at all', async () => {
+      // No `shop_profile` row: `loadShopRules()` throws a 503 for every order
+      // route, and the health check must be unmoved by it. A health check that
+      // could fail on the database would take the whole service out of
+      // rotation over a legal-notice warning.
+      await db.delete(shopProfile);
+      await refreshLegalStatus();
+
+      const res = await app.inject({ method: 'GET', url: '/api/health' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ status: 'ok', legal: 'unknown' });
+    });
+
+    it('keeps the last known answer when a later read fails', async () => {
+      await db
+        .update(shopProfile)
+        .set({ legalOwnerName: 'Mario Rossi', email: 'info@portofino-essen.de' });
+      await refreshLegalStatus();
+      expect((await getHealth()).legal).toBe('complete');
+
+      await db.delete(shopProfile);
+      await refreshLegalStatus();
+      expect((await getHealth()).legal).toBe('complete');
     });
   });
 });
