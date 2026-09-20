@@ -48,6 +48,18 @@ async function loggingApp(): Promise<ReturnType<typeof capture>> {
   return log;
 }
 
+/**
+ * `inject` resolves when the response ends; the `onResponse` hook runs on the
+ * socket's `finish` event. Those are ordered in practice but nothing promises
+ * the hook's write has reached the capture stream by the time the promise
+ * settles, so yield once before reading the buffer. A flake guard, not a
+ * correctness one.
+ */
+async function injected(...calls: Promise<unknown>[]): Promise<void> {
+  await Promise.all(calls);
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
 const UNKNOWN_ORDER = '/api/orders/00000000-0000-0000-0000-000000000000';
 
 describe('the request log carries no client IP on the way in', () => {
@@ -56,6 +68,7 @@ describe('the request log carries no client IP on the way in', () => {
 
     const ok = await app!.inject({ method: 'GET', url: '/api/health' });
     const missing = await app!.inject({ method: 'GET', url: UNKNOWN_ORDER });
+    await injected();
 
     expect(ok.statusCode).toBe(200);
     expect(missing.statusCode).toBe(404);
@@ -79,7 +92,7 @@ describe('the request log carries no client IP on the way in', () => {
   it('puts no IP anywhere in a successful request', async () => {
     const log = await loggingApp();
 
-    await app!.inject({ method: 'GET', url: '/api/health' });
+    await injected(app!.inject({ method: 'GET', url: '/api/health' }));
 
     for (const line of log.lines()) {
       expect(line).not.toHaveProperty('ip');
@@ -95,8 +108,8 @@ describe('the client IP comes back on failures only', () => {
   it('logs ip, statusCode and url on a 4xx, and on nothing else', async () => {
     const log = await loggingApp();
 
-    await app!.inject({ method: 'GET', url: '/api/health' }); // 2xx
-    await app!.inject({ method: 'GET', url: UNKNOWN_ORDER }); // 4xx
+    await injected(app!.inject({ method: 'GET', url: '/api/health' })); // 2xx
+    await injected(app!.inject({ method: 'GET', url: UNKNOWN_ORDER })); // 4xx
 
     const withIp = log.lines().filter((l) => 'ip' in l);
 
@@ -113,6 +126,7 @@ describe('the client IP comes back on failures only', () => {
     // The owner editor fails closed and the suite arms it, so a bare call is a
     // real 401 through the real guard.
     const res = await app!.inject({ method: 'GET', url: '/api/admin/menu' });
+    await injected();
     expect(res.statusCode).toBe(401);
 
     const withIp = log.lines().filter((l) => 'ip' in l);
@@ -126,11 +140,13 @@ describe('the D3 access token never reaches the log', () => {
     const log = await loggingApp();
     const TOKEN = 'aVeryDistinctiveOrderAccessTokenValue0123456';
 
-    await app!.inject({
-      method: 'GET',
-      url: UNKNOWN_ORDER,
-      headers: { authorization: `Bearer ${TOKEN}` },
-    });
+    await injected(
+      app!.inject({
+        method: 'GET',
+        url: UNKNOWN_ORDER,
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+    );
 
     // The whole captured stream, not just the url field: a header that leaked
     // into any serializer would show up here too.
@@ -146,7 +162,9 @@ describe('the D3 access token never reaches the log', () => {
     // logged, which is precisely why D3 refuses to put the token in it.
     const log = await loggingApp();
 
-    await app!.inject({ method: 'GET', url: `${UNKNOWN_ORDER}?proof=in-the-url` });
+    await injected(
+      app!.inject({ method: 'GET', url: `${UNKNOWN_ORDER}?proof=in-the-url` }),
+    );
 
     expect(log.raw()).toContain('proof=in-the-url');
   });

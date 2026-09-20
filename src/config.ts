@@ -7,18 +7,36 @@ function env(key: string, fallback = ''): string {
 }
 
 /**
- * A whole number of periods, or the default.
+ * A whole number of periods within `[1, max]`, or the documented default.
  *
- * Deliberately strict and deliberately silent about it in only one direction:
- * a misspelt or non-numeric retention period falls back to the documented
- * default rather than to `NaN`, which would make every age comparison false
- * and silently disable the sweep. `0` is rejected for the same reason in
- * reverse — a zero contact period would clear every order's phone number the
- * first time the sweep ran.
+ * Every rejected value falls back rather than propagating, and each rejection
+ * is a failure mode somebody would otherwise have to debug from behaviour:
+ *
+ * - **Not a number** (a misspelling, an empty string) would be `NaN`, which
+ *   makes every age comparison false and silently disables the sweep.
+ * - **Zero or negative** would clear every order's phone number the first time
+ *   the sweep ran.
+ * - **Absurdly large** is not harmless either. An interval above ~2^31 ms
+ *   overflows `setInterval`, which Node clamps to 1 ms — turning the sweep
+ *   into a hot loop of database round trips — and a large enough year count
+ *   makes the cutoff an Invalid Date, whose query fails on every run.
+ *
+ * A rejection is logged, not swallowed: an operator who set the variable
+ * deliberately needs to know it did not take.
  */
-export function positiveIntFromEnv(key: string, fallback: number): number {
-  const parsed = Number(env(key));
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+export function positiveIntFromEnv(
+  key: string,
+  fallback: number,
+  max = 1_000_000,
+): number {
+  const raw = env(key);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed > 0 && parsed <= max) return parsed;
+  console.warn(
+    `${key}="${raw}" is not a whole number between 1 and ${max}; using ${fallback}.`,
+  );
+  return fallback;
 }
 
 const port = Number(env('PORT', '4000'));
@@ -122,10 +140,17 @@ export const config = {
    * recoverable from a backup for up to a week after the sweep. The privacy
    * policy has to SAY that rather than imply an instant deletion.
    */
+  // Each cap is the point past which the value stops meaning anything: 1200
+  // months and 100 years are both far beyond any retention obligation, and an
+  // interval above a year would overflow `setInterval`.
   retention: {
-    contactMonths: positiveIntFromEnv('RETENTION_CONTACT_MONTHS', 6),
-    orderYears: positiveIntFromEnv('RETENTION_ORDER_YEARS', 10),
-    sweepIntervalHours: positiveIntFromEnv('RETENTION_SWEEP_INTERVAL_HOURS', 24),
+    contactMonths: positiveIntFromEnv('RETENTION_CONTACT_MONTHS', 6, 1200),
+    orderYears: positiveIntFromEnv('RETENTION_ORDER_YEARS', 10, 100),
+    sweepIntervalHours: positiveIntFromEnv(
+      'RETENTION_SWEEP_INTERVAL_HOURS',
+      24,
+      24 * 365,
+    ),
   },
 
   // Domain constants. Money is always an integer number of cents.

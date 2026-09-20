@@ -139,6 +139,21 @@ describe('runRetentionSweep — the two periods', () => {
     expect(lines).toHaveLength(0);
   });
 
+  it('counts a deleted order once, not twice', async () => {
+    setNowForTests(TODAY);
+    await seedOrder({ ageYears: 11 });
+    await seedOrder({ ageMonths: 7 });
+
+    const result = await runRetentionSweep();
+
+    // The contact cutoff is a superset of the deletion cutoff, so without an
+    // explicit lower bound the 11-year-old order is UPDATEd and then DELETEd
+    // in the same transaction — and counted in both numbers, which makes the
+    // log line overstate what happened.
+    expect(result.ordersDeleted).toBe(1);
+    expect(result.contactCleared).toBe(1);
+  });
+
   it('keeps a 9-year-old order but has already minimised it', async () => {
     setNowForTests(TODAY);
     const id = await seedOrder({ ageYears: 9 });

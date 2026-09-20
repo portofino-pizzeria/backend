@@ -14,8 +14,8 @@ Customer (consumed by the mobile app — contract mirrors `../mobile/src/lib`):
 | Method | Path | Purpose |
 |---|---|---|
 | `GET`  | `/api/menu` | Menu → `{ items }` |
-| `POST` | `/api/orders` | Create order → `{ order }`. `customer.name`, `customer.phone` (≥ 6 digits) and `customer.address` are **required** — every order is a delivery. Refusals are `400` with a German message the checkout shows verbatim |
-| `GET`  | `/api/orders/:id` | Order (status polling) → `{ order }` |
+| `POST` | `/api/orders` | Create order → `{ order, accessToken }`. `customer.name`, `customer.phone` (≥ 6 digits) and `customer.address` are **required** — every order is a delivery. Refusals are `400` with a German message the checkout shows verbatim. **`accessToken` is served here and nowhere else** — see "The order access token" |
+| `GET`  | `/api/orders/:id` | Order (status polling) → `{ order }`. **The customer block needs the order's access token** in an `Authorization: Bearer` header; without one the order comes back carrying `customerRedacted: true`, with a wrong one it is `401` |
 | `GET`  | `/api/payments/providers` | `{ stripe, paypal, mockFallback }` |
 | `POST` | `/api/payments/checkout` | Start hosted checkout → `{ url, provider }` |
 
@@ -86,7 +86,77 @@ With neither, the dashboard's token prompt can never succeed (the server is
 refusing, not checking), and the server says so at boot and in
 `GET /api/health` → `kitchen: "unconfigured"`. The owner's menu editor
 (`/api/admin/menu/*`, `OWNER_MENU_TOKEN`) fails closed the same way and has no
-opt-out at all.
+opt-out at all. The same token guards the data-subject surface below.
+
+### The order access token
+
+`GET /api/orders/:id` used to be unauthenticated and returned the customer's
+name, phone number and delivery address to anyone holding the order link — and
+the link travels, through Stripe metadata, the payment return URL and browser
+history.
+
+So the order id stays an *identifier* and `orders.access_token` is the
+*capability*: 32 bytes of CSPRNG randomness, minted at creation and returned
+exactly once, in the `POST /api/orders` response, to the device that placed the
+order.
+
+| The caller presents | The read answers |
+|---|---|
+| nothing | the non-personal order, plus `customerRedacted: true` |
+| the right token | the customer block, as before |
+| a **wrong** token | `401` |
+
+It travels in `Authorization: Bearer`, **never a query parameter** — the request
+logger keeps `url` on every request, so a query parameter would put the
+capability straight into CloudWatch, browser history and the `Referer` header.
+For the same reason the Stripe return URL does not carry it either; the device
+already has it.
+
+`customerRedacted` exists so a client can tell *"we are not showing you this"*
+from *"there is nothing to show"*. The order screen renders a red "Keine
+Lieferadresse hinterlegt" for the second case, so without the flag a privacy
+improvement would read as an error.
+
+The cost, accepted deliberately: the order link no longer shows a diner their
+own details on a second device or after clearing site data.
+
+### Data-subject requests (`/api/admin/orders/*`)
+
+Behind `OWNER_MENU_TOKEN`, the same guard as the menu editor.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/admin/orders/search` | `{ phone }` → `{ orders }`. Matches on digits only, as a **suffix**, so `0201 5415883`, `+49 201 5415883` and `0201/5415883` find each other. **POST, with the number in the body** — a `?phone=` would write it into the request log |
+| `GET`  | `/api/admin/orders/:id/personal-data` | The Art. 15 extract for one order, as JSON, with German `hinweise` naming what it cannot contain |
+| `POST` | `/api/admin/orders/:id/forget` | Art. 17. NULLs the four customer columns and stamps `personal_data_erased_at`, keeping the order, its lines and its totals. Refused (`409`) on `paid` and `preparing` only — erasing the address of food in the oven would strand it. Accepted on `pending_payment`, `ready` and `cancelled` |
+
+Neither reaches **Stripe** (which holds its own record of the payment), the
+**7-day Aurora backup window**, or the **diner's own device**. Both responses
+say so in German.
+
+### Retention
+
+Two passes over `orders.created_at`, run by `runRetentionSweep()`:
+
+| After | What happens |
+|---|---|
+| `RETENTION_CONTACT_MONTHS` (**6**) | `customer_phone`, `customer_address` and `customer_notes` → `NULL` |
+| `RETENTION_ORDER_YEARS` (**10**) | the order and its lines are deleted |
+
+The name survives the first pass: it is part of the record §147 AO / §257 HGB
+keeps. **The second period is the owner's tax advisor's call**, which is why it
+is a variable; it defaults to the longer reading, because keeping a record too
+long is recoverable and deleting it early is not.
+
+`RETENTION_SWEEP_INTERVAL_HOURS` (**24**) is a floor, not a timer: the sweep
+takes a Postgres advisory lock (the service runs up to 25 App Runner instances)
+and reads a `retention_runs` marker, so "daily" means *at most once per period*
+rather than *once per timer tick*. It runs after `initDatabase()` returns —
+never inside its retry loop, which retries 20 times.
+
+**Deleting a column is not deleting the data.** Aurora's automated backups
+retain 7 days, so a NULLed phone number stays restorable for up to a week. The
+privacy policy has to say so rather than imply an instant deletion.
 
 ### Payments in dev
 

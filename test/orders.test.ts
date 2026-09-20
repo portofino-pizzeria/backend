@@ -646,24 +646,10 @@ describe('GET /api/orders/:id — the access token (D3)', () => {
     expect(row.access_token).toBe(accessToken);
   });
 
-  it("backfills rows that predate the column with unguessable values", async () => {
-    // The migration runs `add column` nullable -> `update` -> `set not null`,
-    // so a table that already had orders keeps them and every one comes out
-    // with a token. The test database is created empty, so the backfill has no
-    // pre-existing rows to act on here; what IS testable, and what would
-    // actually regress, is the expression it backfills WITH. Run it.
-    const rows = await sql<{ token: string }[]>`
-      select
-        replace(gen_random_uuid()::text, '-', '') ||
-        replace(gen_random_uuid()::text, '-', '') as token
-      from generate_series(1, 200)
-    `;
-
-    const tokens = rows.map((r) => r.token);
-    expect(tokens).toHaveLength(200);
-    expect(new Set(tokens).size).toBe(200);
-    for (const token of tokens) expect(token).toMatch(/^[0-9a-f]{64}$/);
-  });
+  // The migration's real backfill — against a table that already has orders —
+  // lives in `test/migration-backfill.test.ts`, which stands up a scratch
+  // database for it. The suite's own database is created empty, so nothing
+  // here could exercise it.
 
   it('serves the token from POST and from nowhere else', async () => {
     const { order, accessToken } = await annasOrder();
@@ -684,6 +670,11 @@ describe('GET /api/orders/:id — the access token (D3)', () => {
     ]);
 
     for (const res of elsewhere) {
+      // The status assertion is what stops this guard passing vacuously: if
+      // the kitchen board started 401ing, or checkout started 400ing on the
+      // opening hours, an error body trivially "does not contain" the token
+      // and the guard would silently stop guarding.
+      expect(res.statusCode).toBe(200);
       expect(res.body).not.toContain(accessToken);
     }
   });

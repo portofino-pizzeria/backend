@@ -37,12 +37,19 @@ function owner(
   method: 'GET' | 'POST',
   url: string,
   token: string | null = TEST_OWNER_MENU_TOKEN,
+  payload?: unknown,
 ) {
   return app.inject({
     method,
     url,
+    ...(payload === undefined ? {} : { payload: payload as object }),
     headers: token === null ? {} : { authorization: `Bearer ${token}` },
   });
+}
+
+/** The phone search. POST, with the number in the body — never in the url. */
+function search(phone: string, token: string | null = TEST_OWNER_MENU_TOKEN) {
+  return owner('POST', '/api/admin/orders/search', token, { phone });
 }
 
 let seq = 0;
@@ -95,13 +102,14 @@ describe('every route fails closed', () => {
     const id = await seedOrder();
 
     const calls = await Promise.all([
-      owner('GET', '/api/admin/orders/search?phone=5415883', null),
+      search('5415883', null),
       owner('GET', `/api/admin/orders/${id}/personal-data`, null),
       owner('POST', `/api/admin/orders/${id}/forget`, null),
     ]);
 
     for (const res of calls) expect(res.statusCode).toBe(401);
-    // And nothing leaked on the way out.
+    // And nothing leaked on the way out. The status assertion above is what
+    // stops this passing on some other error body.
     for (const res of calls) {
       expect(res.body).not.toContain('Anna Bergmann');
       expect(res.body).not.toContain('Teststraße');
@@ -129,11 +137,11 @@ describe('every route fails closed', () => {
   });
 });
 
-describe('GET /api/admin/orders/search', () => {
+describe('POST /api/admin/orders/search', () => {
   it('finds a diner by the digits of their phone number', async () => {
     const id = await seedOrder({ phone: '0201 5415883' });
 
-    const res = await owner('GET', '/api/admin/orders/search?phone=0201%205415883');
+    const res = await search('0201 5415883');
 
     expect(res.statusCode).toBe(200);
     const hits = res.json<{ orders: { id: string; name: string }[] }>().orders;
@@ -149,8 +157,9 @@ describe('GET /api/admin/orders/search', () => {
     await seedOrder({ phone: '0201/5415883' });
     await seedOrder({ phone: '0201-5415883' });
 
-    const res = await owner('GET', '/api/admin/orders/search?phone=5415883');
+    const res = await search('5415883');
 
+    expect(res.statusCode).toBe(200);
     expect(res.json<{ orders: unknown[] }>().orders).toHaveLength(3);
   });
 
@@ -158,27 +167,46 @@ describe('GET /api/admin/orders/search', () => {
     await seedOrder({ phone: '0201 5415883' });
 
     // A prefix, not a suffix — this is a different phone.
-    const res = await owner('GET', '/api/admin/orders/search?phone=0201541');
+    const res = await search('0201541');
 
+    expect(res.statusCode).toBe(200);
     expect(res.json<{ orders: unknown[] }>().orders).toHaveLength(0);
   });
 
   it('refuses a fragment too short to be a phone number', async () => {
-    const res = await owner('GET', '/api/admin/orders/search?phone=541');
+    const res = await search('541');
     expect(res.statusCode).toBe(400);
     expect(res.json<{ error: string }>().error).toContain('Ziffern');
   });
 
-  it('refuses a missing phone parameter', async () => {
-    const res = await owner('GET', '/api/admin/orders/search');
+  it('refuses a missing phone field', async () => {
+    const res = await owner('POST', '/api/admin/orders/search', TEST_OWNER_MENU_TOKEN, {});
     expect(res.statusCode).toBe(400);
+  });
+
+  it('keeps the number out of the url, so it never reaches the request log', async () => {
+    // The request logger keeps `url` on every incoming request. A
+    // `GET ?phone=…` would write a diner's phone number into the very
+    // CloudWatch logs D4 exists to minimise — on the request whose whole
+    // purpose is to honour that diner's privacy rights.
+    await seedOrder({ phone: '0201 5415883' });
+
+    const viaQuery = await owner(
+      'GET',
+      '/api/admin/orders/search?phone=5415883',
+    );
+    expect(viaQuery.statusCode).toBe(404);
+
+    const viaBody = await search('5415883');
+    expect(viaBody.statusCode).toBe(200);
   });
 
   it('skips orders whose phone number has already been erased', async () => {
     const kept = await seedOrder({ phone: '0201 5415883' });
     await seedOrder({ phone: null });
 
-    const res = await owner('GET', '/api/admin/orders/search?phone=5415883');
+    const res = await search('5415883');
+    expect(res.statusCode).toBe(200);
     const hits = res.json<{ orders: { id: string }[] }>().orders;
 
     expect(hits).toHaveLength(1);
@@ -223,6 +251,10 @@ describe('GET /api/admin/orders/:id/personal-data', () => {
     expect(all).toContain('Stripe');
     expect(all).toContain('Angaben merken');
     expect(all).toContain('7 Tage');
+    // And why an older order's fields are already empty — without this the
+    // extract reads as a bug to whoever is answering the phone.
+    expect(all).toContain('6 Monate');
+    expect(all).toContain('kein Fehler');
   });
 
   it('404s an unknown order', async () => {

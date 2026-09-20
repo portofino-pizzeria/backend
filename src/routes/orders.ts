@@ -158,8 +158,12 @@ const createOrderSchema = z.object({
  * instead of a 401.
  */
 function bearerToken(header: string | undefined): string | null {
+  // RFC 7235 auth schemes are case-INSENSITIVE. A client or proxy that sends
+  // `bearer <token>` must not degrade silently to the redacted read: from the
+  // client side that is indistinguishable from "no token" and close to
+  // undebuggable.
   const value = header ?? '';
-  if (!value.startsWith('Bearer ')) return null;
+  if (!/^bearer /i.test(value)) return null;
   const token = value.slice(7).trim();
   return token.length > 0 ? token : null;
 }

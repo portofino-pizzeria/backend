@@ -26,8 +26,9 @@
 //   * **The diner's own device.** That is what "Gespeicherte Angaben löschen"
 //     in checkout is for.
 
-import { and, desc, eq, isNotNull, sql as raw } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, notInArray, sql as raw } from 'drizzle-orm';
 
+import { config } from '../config.js';
 import { now } from './clock.js';
 import { db } from '../db/client.js';
 import { orderLines, orders, type OrderRow } from '../db/schema.js';
@@ -156,6 +157,24 @@ const EXTRACT_HINWEISE = [
     'Datenbank-Sicherung enthalten sein.',
 ];
 
+/**
+ * Why a months-old order's phone, address and note are already empty.
+ *
+ * Without this, an extract for a seven-month-old order shows three nulls, no
+ * erasure timestamp and four notes about Stripe — and reads like a bug to the
+ * person answering the phone. D4 makes that the COMMON case, so the extract
+ * has to explain it.
+ */
+function retentionHinweis(): string {
+  return (
+    `Telefonnummer, Adresse und Notiz werden ${config.retention.contactMonths} Monate ` +
+    'nach der Bestellung automatisch gelöscht; der Name und die Bestellung selbst ' +
+    `bleiben für die gesetzliche Aufbewahrung (${config.retention.orderYears} Jahre) ` +
+    'erhalten. Leere Felder bei einer älteren Bestellung sind deshalb normal und ' +
+    'kein Fehler.'
+  );
+}
+
 export async function personalDataExtract(
   id: string,
 ): Promise<PersonalDataExtract> {
@@ -195,7 +214,7 @@ export async function personalDataExtract(
       paidAt: row.paidAt?.toISOString() ?? null,
     },
     personalDataErasedAt: row.personalDataErasedAt?.toISOString() ?? null,
-    hinweise: EXTRACT_HINWEISE,
+    hinweise: [...EXTRACT_HINWEISE, retentionHinweis()],
   };
 }
 
@@ -245,24 +264,19 @@ export interface ForgetResult {
  * the history still shown.
  */
 export async function forgetOrder(id: string): Promise<ForgetResult> {
-  const row = await requireOrder(id);
-
-  const refusal = FORGET_REFUSED[row.status];
-  if (refusal) throw conflict(refusal);
-
-  if (row.personalDataErasedAt) {
-    return {
-      orderId: row.id,
-      erased: false,
-      personalDataErasedAt: row.personalDataErasedAt.toISOString(),
-      meldung:
-        'Die Kontaktdaten dieser Bestellung wurden bereits gelöscht. Es wurde nichts ' +
-        'weiter geändert.',
-    };
-  }
-
   const at = now();
-  await db
+
+  // ONE statement decides and writes. A read-then-write would be a TOCTOU on
+  // both guards at once: the kitchen could move the order to `preparing`
+  // between the status check and the UPDATE — erasing the address of a
+  // delivery in flight, the exact outcome the refusal exists to prevent — and
+  // two concurrent calls would both see `personal_data_erased_at IS NULL` and
+  // both write, overwriting the first erasure's timestamp this function
+  // promises never to move.
+  //
+  // So the predicate carries the guards, and the returned row count tells us
+  // which branch actually happened.
+  const [erased] = await db
     .update(orders)
     .set({
       customerName: null,
@@ -272,10 +286,44 @@ export async function forgetOrder(id: string): Promise<ForgetResult> {
       personalDataErasedAt: at,
       updatedAt: at,
     })
-    .where(eq(orders.id, id));
+    .where(
+      and(
+        eq(orders.id, id),
+        isNull(orders.personalDataErasedAt),
+        notInArray(orders.status, Object.keys(FORGET_REFUSED)),
+      ),
+    )
+    .returning({ id: orders.id });
+
+  if (!erased) {
+    // Nothing was written. Re-read to say WHY — the order is unknown, already
+    // erased, or in a state that refuses. This read races nothing: every
+    // outcome it reports is one where no write happened.
+    const row = await requireOrder(id);
+
+    const refusal = FORGET_REFUSED[row.status];
+    if (refusal) throw conflict(refusal);
+
+    if (row.personalDataErasedAt) {
+      return {
+        orderId: row.id,
+        erased: false,
+        personalDataErasedAt: row.personalDataErasedAt.toISOString(),
+        meldung:
+          'Die Kontaktdaten dieser Bestellung wurden bereits gelöscht. Es wurde nichts ' +
+          'weiter geändert.',
+      };
+    }
+
+    // Neither guard explains it, so the row changed under us between the
+    // UPDATE and this read. Refusing is the safe answer; a retry succeeds.
+    throw conflict(
+      'Diese Bestellung hat sich gerade geändert. Bitte noch einmal versuchen.',
+    );
+  }
 
   return {
-    orderId: row.id,
+    orderId: id,
     erased: true,
     personalDataErasedAt: at.toISOString(),
     meldung:

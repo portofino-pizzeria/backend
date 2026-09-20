@@ -22,7 +22,7 @@ import {
   personalDataExtract,
 } from '../lib/personal-data.js';
 
-const searchQuerySchema = z.object({
+const searchBodySchema = z.object({
   phone: z
     .string({ required_error: 'Bitte eine Telefonnummer angeben.' })
     .min(1, 'Bitte eine Telefonnummer angeben.')
@@ -32,21 +32,27 @@ const searchQuerySchema = z.object({
 export async function adminPrivacyRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireOwnerAuth);
 
-  // GET /api/admin/orders/search?phone=… -> { orders }
+  // POST /api/admin/orders/search  { phone } -> { orders }
   //
   // A phone number is the only identifier a caller can give over the phone:
   // there is no account, no email address and no password anywhere in this
   // system, and nobody reads out an order UUID.
-  app.get<{ Querystring: { phone?: string } }>(
-    '/api/admin/orders/search',
-    async (req) => {
-      const parsed = searchQuerySchema.safeParse(req.query);
-      if (!parsed.success) {
-        throw badRequest(parsed.error.issues[0]?.message ?? 'Ungültige Suche.');
-      }
-      return { orders: await findOrdersByPhone(parsed.data.phone) };
-    },
-  );
+  //
+  // **POST, with the number in the BODY — not `GET ?phone=…`.** The plan wrote
+  // it as a query parameter, and that is the one shape it must not have: the
+  // request logger keeps `url` on every incoming request (`app.ts`), so a
+  // diner's phone number would be written straight into the CloudWatch logs
+  // that decision D4 exists to minimise, on the very request whose purpose is
+  // to honour that diner's privacy rights. It is the same argument that keeps
+  // the D3 order token out of the query string, applied to the same data one
+  // surface over. A body is not logged.
+  app.post('/api/admin/orders/search', async (req) => {
+    const parsed = searchBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw badRequest(parsed.error.issues[0]?.message ?? 'Ungültige Suche.');
+    }
+    return { orders: await findOrdersByPhone(parsed.data.phone) };
+  });
 
   // GET /api/admin/orders/:id/personal-data -> the Art. 15 extract
   //

@@ -44,7 +44,7 @@
 // different one, in general, which leaks the lock permanently. The transaction
 // form is released by the transaction itself, on the connection that took it.
 
-import { and, eq, isNotNull, lt, or, sql as raw } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, lt, or, sql as raw } from 'drizzle-orm';
 
 import { config } from '../config.js';
 import { now } from './clock.js';
@@ -151,6 +151,7 @@ export async function runRetentionSweep(
     // "the owner erased this on a data-subject request" (D5); a partial
     // minimisation is a different event and must not claim to be that one.
     const contactCutoff = monthsBefore(at, config.retention.contactMonths);
+    const orderCutoff = yearsBefore(at, config.retention.orderYears);
     const cleared = await tx
       .update(orders)
       .set({
@@ -162,6 +163,12 @@ export async function runRetentionSweep(
       .where(
         and(
           lt(orders.createdAt, contactCutoff),
+          // Not the rows pass 2 is about to delete outright. The contact
+          // cutoff is a superset of the deletion cutoff, so without this an
+          // 11-year-old order is UPDATEd and then DELETEd in the same
+          // transaction — and counted in BOTH numbers, which makes the log
+          // line overstate what happened.
+          gte(orders.createdAt, orderCutoff),
           // Only rows that still hold something, so a sweep over an
           // already-swept table is a genuine no-op rather than a mass UPDATE
           // that bumps `updated_at` on every historical order.
@@ -177,7 +184,6 @@ export async function runRetentionSweep(
     // Pass 2 — deletion. The whole order, once the commercial-retention period
     // has run out. `order_lines` references `orders.id` with
     // `onDelete: 'cascade'`, so the lines go with it.
-    const orderCutoff = yearsBefore(at, config.retention.orderYears);
     const deleted = await tx
       .delete(orders)
       .where(lt(orders.createdAt, orderCutoff))
