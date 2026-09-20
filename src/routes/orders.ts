@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { badRequest, notFound } from '../lib/http-errors.js';
-import { createOrder, getOrder } from '../lib/order-service.js';
+import { createOrder, readOrderForCaller } from '../lib/order-service.js';
 
 /** Digits a phone number must contain. See the `phone` rule below. */
 export const MIN_PHONE_DIGITS = 6;
@@ -141,20 +141,56 @@ const createOrderSchema = z.object({
   }
 });
 
+/**
+ * The order access token, out of an `Authorization: Bearer` header — NOT out of
+ * a query parameter (decision D3).
+ *
+ * A query parameter would be written straight into the CloudWatch request log
+ * (Fastify's `req` serializer logs `url` on every incoming request), into
+ * browser history via the web same-tab path's `history.replaceState`, and into
+ * the `Referer` of anything the page links to. Those three leaks are precisely
+ * what this capability exists to close, so the capability must not travel
+ * through them.
+ *
+ * `null` means "the caller presented nothing" — an empty or malformed
+ * `Authorization` header is treated as nothing rather than as a wrong guess, so
+ * a proxy that strips or mangles the header degrades to the redacted read
+ * instead of a 401.
+ */
+function bearerToken(header: string | undefined): string | null {
+  const value = header ?? '';
+  if (!value.startsWith('Bearer ')) return null;
+  const token = value.slice(7).trim();
+  return token.length > 0 ? token : null;
+}
+
 export async function orderRoutes(app: FastifyInstance): Promise<void> {
-  // POST /api/orders -> { order }
+  // POST /api/orders -> { order, accessToken }
+  //
+  // `accessToken` is returned exactly once, here (D3). Nothing else ever serves
+  // it: not `GET /api/orders/:id`, not the kitchen board, not the Stripe return
+  // URL.
   app.post('/api/orders', async (req) => {
     const parsed = createOrderSchema.safeParse(req.body);
     if (!parsed.success) {
       throw badRequest(parsed.error.issues[0]?.message ?? 'Invalid order.');
     }
-    const order = await createOrder(parsed.data);
-    return { order };
+    const { order, accessToken } = await createOrder(parsed.data);
+    return { order, accessToken };
   });
 
   // GET /api/orders/:id -> { order }
+  //
+  // Split read (D3): with the order's access token in an `Authorization:
+  // Bearer` header the customer block is included; without one it is withheld
+  // and the response says so with `customerRedacted: true`; with a WRONG token
+  // the read is refused 401. See `readOrderForCaller` for why those are three
+  // outcomes rather than two.
   app.get<{ Params: { id: string } }>('/api/orders/:id', async (req) => {
-    const order = await getOrder(req.params.id);
+    const order = await readOrderForCaller(
+      req.params.id,
+      bearerToken(req.headers.authorization),
+    );
     if (!order) throw notFound('Order not found.');
     return { order };
   });

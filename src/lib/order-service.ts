@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import { desc, eq, inArray } from 'drizzle-orm';
 
 import { config } from '../config.js';
 import { now } from './clock.js';
+import { secretsMatch } from './secrets.js';
 import { refusalFor, shopStatus } from './shop.js';
 import { db } from '../db/client.js';
 import {
@@ -15,13 +16,25 @@ import {
   type OrderRow,
 } from '../db/schema.js';
 import type {
+  CreatedOrder,
   CustomerInfo,
   Fulfilment,
   Order,
   OrderStatus,
   PaymentProvider,
 } from '../types.js';
-import { badRequest, notFound } from './http-errors.js';
+import { badRequest, notFound, unauthorized } from './http-errors.js';
+
+/**
+ * Mint an order access token (decision D3): 32 bytes of CSPRNG randomness,
+ * base64url so it survives a header, a URL and a JSON string unescaped.
+ *
+ * 256 bits is far more than the 122 a UUID carries, and deliberately so — this
+ * value IS the authorisation, where the id is merely a name.
+ */
+export function newOrderAccessToken(): string {
+  return randomBytes(32).toString('base64url');
+}
 
 /** Turn DB rows into the public Order shape the mobile app expects. */
 export function serializeOrder(row: OrderRow, lines: OrderLineRow[]): Order {
@@ -72,6 +85,58 @@ export async function getOrder(id: string): Promise<Order | null> {
   return serializeOrder(row, await loadLines(id));
 }
 
+/**
+ * The same order with the customer block withheld and the withholding declared
+ * (decision D3). See `Order.customerRedacted` for why the flag is not optional
+ * in spirit: silently omitting the block is indistinguishable from an order
+ * that has none, and the app renders that as an error.
+ */
+export function redactCustomer(order: Order): Order {
+  const { customer: _withheld, ...rest } = order;
+  return { ...rest, customerRedacted: true };
+}
+
+/**
+ * The read behind `GET /api/orders/:id` (decision D3).
+ *
+ * Three outcomes, deliberately distinct:
+ *
+ * - **No token presented** → the non-personal order, `customerRedacted: true`.
+ *   This is the shape every pre-D3 client, every second device and every
+ *   browser that cleared its site data gets. It is a degradation, not a
+ *   refusal: status, lines, totals, fulfilment and timestamps are all there.
+ * - **The right token** → the full order, customer block included.
+ * - **A token that is presented and WRONG** → `401`. A caller that produced a
+ *   credential and got it wrong is not the same as one that produced none, and
+ *   answering it with the redacted shape would quietly mask a client bug (a
+ *   stale token in device storage) as a privacy feature.
+ *
+ * An unknown id is `null` here and `404` at the route — the pre-existing
+ * behaviour, unchanged. The id is an unguessable UUID, so the 404 leaks
+ * nothing a request for a known id would not.
+ */
+export async function readOrderForCaller(
+  id: string,
+  presentedToken: string | null,
+): Promise<Order | null> {
+  const [row] = await db.select().from(orders).where(eq(orders.id, id));
+  if (!row) return null;
+
+  const order = serializeOrder(row, await loadLines(id));
+  if (presentedToken === null) return redactCustomer(order);
+
+  // Constant-time, via the same helper the kitchen and owner guards use — a
+  // `===` here would be a timing oracle on a live capability.
+  if (!secretsMatch(presentedToken, row.accessToken)) {
+    throw unauthorized(
+      'Dieser Bestell-Zugangsschlüssel ist ungültig. Öffne die Bestellung auf dem Gerät, ' +
+        'mit dem du sie aufgegeben hast.',
+    );
+  }
+
+  return order;
+}
+
 export interface CreateOrderInput {
   items: { menuItemId: string; variantId: string; quantity: number }[];
   /** Defaults to delivery, the only kind of order before pickup existed. */
@@ -79,7 +144,7 @@ export interface CreateOrderInput {
   customer?: CustomerInfo;
 }
 
-export async function createOrder(input: CreateOrderInput): Promise<Order> {
+export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder> {
   const items = input.items ?? [];
   if (items.length === 0) throw badRequest('Order must contain at least one item.');
   const fulfilment: Fulfilment = input.fulfilment ?? 'delivery';
@@ -144,11 +209,13 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
   const total = subtotal + deliveryFee;
 
   const id = randomUUID();
+  const accessToken = newOrderAccessToken();
   const c = input.customer ?? {};
 
   await db.transaction(async (tx) => {
     await tx.insert(orders).values({
       id,
+      accessToken,
       subtotal,
       deliveryFee,
       total,
@@ -169,7 +236,11 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
 
   const created = await getOrder(id);
   if (!created) throw new Error('Order vanished immediately after creation.');
-  return created;
+  // The one and only time the access token leaves the server (D3). The caller
+  // is the device that just typed the name, phone and address into the form,
+  // so handing it the capability to read them back costs nothing it did not
+  // already hold.
+  return { order: created, accessToken };
 }
 
 /** Mark an order paid (idempotent — safe to call from both return-URL + webhook). */

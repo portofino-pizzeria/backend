@@ -115,6 +115,20 @@ export const orders = pgTable('orders', {
   customerAddress: text('customer_address'),
   customerNotes: text('customer_notes'),
 
+  // The capability that unlocks the customer block on `GET /api/orders/:id`
+  // (decision D3). 32 bytes of CSPRNG randomness, base64url, minted at
+  // creation and returned exactly once — in the `POST /api/orders` response,
+  // to the device that placed the order.
+  //
+  // It exists because the order ID cannot be the secret: the ID is already in
+  // Stripe metadata and `client_reference_id`, in the payment return and cancel
+  // URLs, in browser history and on the kitchen board. A capability that leaks
+  // through five surfaces is not a capability.
+  //
+  // It is NEVER serialized into an `Order` — see `serializeOrder`, which does
+  // not read this column.
+  accessToken: text('access_token').notNull(),
+
   paymentProvider: text('payment_provider'), // PaymentProvider
   paymentReference: text('payment_reference'),
   paidAt: timestamp('paid_at', { withTimezone: true }),
