@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { config } from '../src/config.js';
+import { sql } from '../src/db/client.js';
 import type { Order } from '../src/types.js';
 import { createTestApp } from './support/app';
 import {
@@ -53,16 +54,38 @@ function postOrder(payload: OrderPayload) {
   return app.inject({ method: 'POST', url: '/api/orders', payload: body });
 }
 
-async function createOrder(payload: OrderPayload): Promise<Order> {
+/** The whole `POST /api/orders` body — the one place the access token (D3) is served. */
+async function placeOrder(
+  payload: OrderPayload,
+): Promise<{ order: Order; accessToken: string }> {
   const res = await postOrder(payload);
+  expect(res.statusCode).toBe(200);
+  return res.json<{ order: Order; accessToken: string }>();
+}
+
+async function createOrder(payload: OrderPayload): Promise<Order> {
+  return (await placeOrder(payload)).order;
+}
+
+/**
+ * Read an order back. With no `accessToken` this is the tokenless read every
+ * pre-D3 client makes — the non-personal shape. Pass the token to get the
+ * customer block.
+ */
+async function readOrder(id: string, accessToken?: string): Promise<Order> {
+  const res = await getOrderRaw(id, accessToken);
   expect(res.statusCode).toBe(200);
   return res.json<{ order: Order }>().order;
 }
 
-async function readOrder(id: string): Promise<Order> {
-  const res = await app.inject({ method: 'GET', url: `/api/orders/${id}` });
-  expect(res.statusCode).toBe(200);
-  return res.json<{ order: Order }>().order;
+function getOrderRaw(id: string, accessToken?: string) {
+  return app.inject({
+    method: 'GET',
+    url: `/api/orders/${id}`,
+    ...(accessToken === undefined
+      ? {}
+      : { headers: { authorization: `Bearer ${accessToken}` } }),
+  });
 }
 
 describe('POST /api/orders — server-side pricing', () => {
@@ -453,16 +476,16 @@ describe('POST /api/orders requires contact details', () => {
 });
 
 describe('GET /api/orders/:id', () => {
-  it('returns a created order', async () => {
+  it('returns a created order to a caller holding its access token', async () => {
     await seedMargherita();
-    const created = await createOrder({
+    const { order: created, accessToken } = await placeOrder({
       items: [
         { menuItemId: 'margherita', variantId: 'margherita-gross', quantity: 1 },
       ],
       customer: { name: 'Anna', phone: '0201 5415883', address: 'Teststraße 7, 45127 Essen' },
     });
 
-    const read = await readOrder(created.id);
+    const read = await readOrder(created.id, accessToken);
 
     expect(read).toEqual(created);
     expect(read.customer).toEqual({
@@ -470,6 +493,7 @@ describe('GET /api/orders/:id', () => {
       phone: '0201 5415883',
       address: 'Teststraße 7, 45127 Essen',
     });
+    expect(read.customerRedacted).toBeUndefined();
   });
 
   it('404s an unknown order id', async () => {
@@ -479,6 +503,189 @@ describe('GET /api/orders/:id', () => {
     });
 
     expect(res.statusCode).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D3 — the order read stops handing out personal data.
+//
+// Before this, `GET /api/orders/:id` was unauthenticated and returned the name,
+// phone number and delivery address to anyone holding the order link — and the
+// link travels through Stripe metadata, the payment return URL and browser
+// history. The id stays an identifier; the access token is the capability.
+// ---------------------------------------------------------------------------
+
+describe('GET /api/orders/:id — the access token (D3)', () => {
+  const ANNA = {
+    name: 'Anna',
+    phone: '0201 5415883',
+    address: 'Teststraße 7, 45127 Essen',
+    notes: 'Bitte zweimal klingeln',
+  };
+
+  async function annasOrder() {
+    await seedMargherita();
+    return placeOrder({
+      items: [
+        { menuItemId: 'margherita', variantId: 'margherita-gross', quantity: 1 },
+      ],
+      customer: ANNA,
+    });
+  }
+
+  it('mints a fresh, high-entropy token per order and returns it once', async () => {
+    const first = await annasOrder();
+    const second = await placeOrder({
+      items: [
+        { menuItemId: 'margherita', variantId: 'margherita-gross', quantity: 1 },
+      ],
+      customer: ANNA,
+    });
+
+    expect(first.accessToken).toEqual(expect.any(String));
+    // 32 bytes, base64url: 43 characters, no padding, no `+` or `/`.
+    expect(first.accessToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(second.accessToken).not.toBe(first.accessToken);
+    // The token is not the id, and the id is not the token.
+    expect(first.accessToken).not.toBe(first.order.id);
+  });
+
+  it('withholds the customer block without a token, and SAYS it withheld it', async () => {
+    const { order } = await annasOrder();
+
+    const read = await readOrder(order.id);
+
+    expect(read.customer).toBeUndefined();
+    expect(read.customerRedacted).toBe(true);
+    // Everything non-personal is still there — this is a degradation, not a
+    // refusal. The order screen must still render status, lines and totals.
+    expect(read.id).toBe(order.id);
+    expect(read.status).toBe('pending_payment');
+    expect(read.fulfilment).toBe('delivery');
+    expect(read.lines).toEqual(order.lines);
+    expect(read.subtotal).toBe(order.subtotal);
+    expect(read.deliveryFee).toBe(order.deliveryFee);
+    expect(read.total).toBe(order.total);
+    expect(read.createdAt).toBe(order.createdAt);
+  });
+
+  it('never serialises the token itself into the order shape', async () => {
+    const { order, accessToken } = await annasOrder();
+
+    const withToken = await readOrder(order.id, accessToken);
+    const withoutToken = await readOrder(order.id);
+
+    expect(JSON.stringify(withToken)).not.toContain(accessToken);
+    expect(JSON.stringify(withoutToken)).not.toContain(accessToken);
+    expect(JSON.stringify(order)).not.toContain(accessToken);
+  });
+
+  it('refuses a token that is presented and wrong', async () => {
+    const { order } = await annasOrder();
+
+    const res = await getOrderRaw(order.id, 'not-the-right-token-at-all-0000000000000');
+
+    expect(res.statusCode).toBe(401);
+    // And it does not leak the block on the way out.
+    expect(res.body).not.toContain('Teststraße');
+    expect(res.body).not.toContain('0201 5415883');
+  });
+
+  it("refuses another order's token", async () => {
+    const mine = await annasOrder();
+    const theirs = await placeOrder({
+      items: [
+        { menuItemId: 'margherita', variantId: 'margherita-gross', quantity: 1 },
+      ],
+      customer: ANNA,
+    });
+
+    const res = await getOrderRaw(mine.order.id, theirs.accessToken);
+
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('treats a malformed or empty Authorization header as "no token", not a wrong one', async () => {
+    const { order } = await annasOrder();
+
+    // A proxy that strips or mangles the header must degrade to the redacted
+    // read, not break the order screen with a 401.
+    for (const authorization of ['', 'Bearer ', 'Bearer    ', 'Basic abc', 'garbage']) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/orders/${order.id}`,
+        headers: { authorization },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json<{ order: Order }>().order.customerRedacted).toBe(true);
+    }
+  });
+
+  it('still 404s an unknown id, with or without a token', async () => {
+    const { accessToken } = await annasOrder();
+    const unknown = '00000000-0000-0000-0000-000000000000';
+
+    expect((await getOrderRaw(unknown)).statusCode).toBe(404);
+    expect((await getOrderRaw(unknown, accessToken)).statusCode).toBe(404);
+  });
+
+  it('stores the token the API accepts, under a NOT NULL column', async () => {
+    const { order, accessToken } = await annasOrder();
+
+    const [column] = await sql<{ is_nullable: string }[]>`
+      select is_nullable from information_schema.columns
+      where table_name = 'orders' and column_name = 'access_token'
+    `;
+    // NOT NULL is what makes "every order has a capability" a schema fact
+    // rather than a hope — the migration backfills before it adds this.
+    expect(column?.is_nullable).toBe('NO');
+
+    const [row] = await sql<{ access_token: string }[]>`
+      select access_token from orders where id = ${order.id}
+    `;
+    expect(row.access_token).toBe(accessToken);
+  });
+
+  // The migration's real backfill — against a table that already has orders —
+  // lives in `test/migration-backfill.test.ts`, which stands up a scratch
+  // database for it. The suite's own database is created empty, so nothing
+  // here could exercise it.
+
+  it('serves the token from POST and from nowhere else', async () => {
+    const { order, accessToken } = await annasOrder();
+
+    // Every other surface that serves this order, in one place. If any of them
+    // ever starts echoing the capability, this fails.
+    //
+    // In SEQUENCE, not `Promise.all`: `/checkout/mock` marks the order paid,
+    // and `POST /api/payments/checkout` refuses a paid order with a 400. Run
+    // concurrently they race — checkout-start now reads the opening hours from
+    // the database first, so the mock page wins and the 400 below fires.
+    const elsewhere = [];
+    for (const req of [
+      () => getOrderRaw(order.id),
+      () => getOrderRaw(order.id, accessToken),
+      () => app.inject({ method: 'GET', url: '/api/kitchen/orders?scope=all' }),
+      () =>
+        app.inject({
+          method: 'POST',
+          url: '/api/payments/checkout',
+          payload: { orderId: order.id, provider: 'mock' },
+        }),
+      () => app.inject({ method: 'GET', url: `/checkout/mock?order_id=${order.id}` }),
+      () => app.inject({ method: 'GET', url: `/checkout/cancel?order_id=${order.id}` }),
+    ]) {
+      elsewhere.push(await req());
+    }
+
+    for (const res of elsewhere) {
+      // The status assertion is what stops this guard passing vacuously: if
+      // the kitchen board started 401ing, or checkout started 400ing on the
+      // opening hours, an error body trivially "does not contain" the token
+      // and the guard would silently stop guarding.
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain(accessToken);
+    }
   });
 });
 

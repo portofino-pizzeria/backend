@@ -9,6 +9,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
+import { config } from '../config.js';
 import { badRequest } from '../lib/http-errors.js';
 import { requireOwnerAuth } from '../lib/owner-auth.js';
 import {
