@@ -120,6 +120,18 @@ export interface Order {
   fulfilment: Fulfilment;
   status: OrderStatus;
   customer?: CustomerInfo;
+  /**
+   * Set — and only ever set to `true` — when the customer block was WITHHELD
+   * because the caller presented no order access token (decision D3).
+   *
+   * It exists so a client can tell "we are not showing you this" apart from
+   * "there is nothing to show". Without it, the order screen's
+   * `deliveryDetails()` renders a red *"Keine Lieferadresse hinterlegt"* on
+   * every un-tokened delivery order — turning a privacy improvement into a
+   * visible error. Absent on an authorised read and on any order that genuinely
+   * carries no customer data (an erased one, see D5).
+   */
+  customerRedacted?: true;
   payment?: { provider: PaymentProvider; reference?: string; paidAt?: string };
   createdAt: string;
   updatedAt: string;
@@ -147,4 +159,18 @@ export interface ShopLegal {
   complete: boolean;
   /** e.g. `["legalOwnerName", "email"]`. */
   missing: string[];
+}
+
+/**
+ * The `POST /api/orders` response.
+ *
+ * `accessToken` is returned HERE and nowhere else — this is the one moment the
+ * capability from D3 is handed out. It is deliberately not a field of `Order`:
+ * `Order` is read back by `GET /api/orders/:id`, by the kitchen board and by
+ * the payment result pages, and a secret on that shape would be re-served on
+ * every one of them.
+ */
+export interface CreatedOrder {
+  order: Order;
+  accessToken: string;
 }
