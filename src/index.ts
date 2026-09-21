@@ -6,6 +6,7 @@ import { runMigrations } from './db/migrate.js';
 import { seedMenu } from './db/seed.js';
 import { seedShop } from './db/seed-shop.js';
 import { refreshLegalStatus } from './lib/legal-status.js';
+import { startRetentionSweeps } from './lib/retention.js';
 
 async function main() {
   const app = await buildApp();
@@ -27,6 +28,14 @@ async function main() {
   // and seedMenu() loads data/menu.json only into a database that has never
   // had a menu — it never overwrites the owner's edits (see seed.ts).
   await initDatabase(app);
+
+  // Retention (D4) — AFTER initDatabase returns, deliberately. initDatabase
+  // retries up to 20 times and serves anyway on total failure, so a delete
+  // sweep called from inside that loop could run 20 times in a single boot.
+  // Here it runs once per boot and then on its interval, and the
+  // `retention_runs` marker is what stops "once per boot" becoming "on every
+  // deploy" on a service that redeploys on every merge to master.
+  startRetentionSweeps(app.log);
 }
 
 /**
