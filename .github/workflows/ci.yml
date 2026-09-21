@@ -18,7 +18,18 @@ on:
   # workflow being disabled, or failing before its tests for a reason unrelated
   # to the code.
   push:
-    branches: [master]
+    branches:
+      - master
+      # coord's merge-train candidate refs. coord lands a PR that is behind
+      # master by pushing a rebased candidate here and waiting for THIS
+      # workflow to go green on it; with only `master` listed, no run ever
+      # started, coord read "candidate CI never STARTED" and terminally failed
+      # the proposal after 10 requeues (backend#21, 2026-09-21). An
+      # up-to-date PR head lands by fast-forward on its own PR CI and never
+      # needed these. `merge-candidate-spec` is the speculative lane.
+      - 'merge-candidate/**'
+      - 'merge-candidate-batch/**'
+      - 'merge-candidate-spec/**'
   pull_request:
   workflow_call:
     inputs:
