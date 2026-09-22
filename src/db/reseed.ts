@@ -10,8 +10,9 @@
 //    or by a script that meant `db:seed`, refuses.
 //  - With `NODE_ENV=production` it also requires
 //    `--i-know-this-erases-owner-edits`. `NODE_ENV` is `production` in the
-//    Dockerfile, so this is the guard for a shell opened inside a deployed
-//    container, where the menu is the owner's and not a fixture.
+//    Dockerfile, so this branch guards the one place `NODE_ENV=production`
+//    could ever be set for this script, where the menu is the owner's and
+//    not a fixture — see the note below on whether anything can reach it.
 //
 // IN A DEPLOYED CONTAINER THE COMMAND IS `npm run db:reseed:dist`, not
 // `db:reseed`. The runtime image carries the COMPILED tree and nothing else:
@@ -29,6 +30,22 @@
 // A refusal prints why and exits non-zero, so a script that chained it stops.
 // The argument check is the pure `checkReseedArgs()` so it is unit-tested
 // without a process to spawn.
+//
+// THIS FIXES THE SPELLING, NOT REACHABILITY. Fixing what you would type does
+// not mean there is anywhere to type it: AWS App Runner (../infra/backend-
+// service.tf) gives no exec/shell/SSM access into a running instance — there
+// is no `aws apprunner exec` — and the Aurora cluster is `publicly_accessible
+// = false`, with a security group that admits Postgres only from the App
+// Runner VPC connector's own security group (../infra/database.tf,
+// ../infra/network.tf). That excludes every OTHER path too, not just a
+// container shell: a laptop or a GitHub Actions runner pointed at the real
+// DATABASE_URL cannot open the TCP connection either, whatever credentials it
+// holds. So the `NODE_ENV=production` branch above has no exercisable path
+// today, from inside the deployed container or outside it. Reaching it needs
+// a one-off admin task placed IN the private subnets (an ECS/Fargate
+// `run-task` is the usual shape) that does not exist in ../infra yet. That is
+// infrastructure work this repo cannot do on its own, so it is not implied
+// by this fix.
 
 import { fileURLToPath } from 'node:url';
 

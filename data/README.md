@@ -38,4 +38,8 @@ a way to ship a correction.
 
 Inside a deployed container the script is `npm run db:reseed:dist` — the image
 has the compiled tree and neither `tsx`, `src/` nor `.env`, so the `db:reseed`
-spelling cannot run there. Same guard, same two flags.
+spelling cannot run there. Same guard, same two flags. That spelling is
+correct, but there is no way to reach a shell inside the container to type it:
+App Runner gives no exec access, and Aurora accepts connections only from the
+App Runner VPC connector. See the note in `../README.md` under "Local
+development".

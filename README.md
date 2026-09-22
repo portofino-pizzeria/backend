@@ -102,6 +102,17 @@ In the image the build has already happened. CI builds too (`ci.yml`), which is
 what keeps the path in that script honest: `npm run typecheck` does not emit, so
 before that step nothing in CI ever produced `dist/` at all.
 
+**This is the correct spelling, not a working runbook.** There is currently no
+way to reach it in production at all, from inside the container or outside it:
+App Runner has no exec/shell/SSM access into a running instance, and the
+Aurora security group admits Postgres only from the App Runner VPC connector's
+own security group (see `../infra/database.tf`, `../infra/network.tf`) — not a
+laptop, not a GitHub Actions runner, not a source checkout pointed at the real
+`DATABASE_URL`; none of those can even open the TCP connection, whatever
+credentials they hold. Giving an operator a real way to invoke it against
+production — a one-off admin task placed in the private subnets — is infra
+work that has not been done yet.
+
 The **restaurant's own facts** — address, phone number, weekly hours, the
 public-holiday window, the delivery cut-off and the special days — are rows as
 well (`shop_profile`, `shop_weekly_hours`, `shop_special_days`), seeded the
