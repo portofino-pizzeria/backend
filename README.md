@@ -231,7 +231,12 @@ confirmation flow works with zero external setup. Add Stripe **test** keys to
 ## CI
 
 `.github/workflows/ci.yml` — typecheck plus the full suite, on every pull
-request and every push to `master`.
+request and every push to `master`. It also runs on coord's merge-train
+candidate refs (`merge-candidate/**`, `merge-candidate-batch/**`,
+`merge-candidate-spec/**`): coord lands a PR that is behind `master` by
+pushing a rebased candidate to one of those refs and waiting for this
+workflow to go green on it before landing, so a run has to actually start
+there for the merge train to work.
 
 The suite is integration-shaped (pricing, availability and allergens are all
 resolved in the database), so `vitest.config.ts`'s `globalSetup` refuses to run
