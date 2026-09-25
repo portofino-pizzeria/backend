@@ -69,10 +69,22 @@ function resultPage(opts: {
   h1 { font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
     font-size: 22px; margin: 16px 0 8px; }
   p { color: #666666; margin: 0 0 20px; }
+  /* THE BORDER IS NOT DECORATION. The gold fill measures 2.01:1 against the
+     cream and 2.23:1 against this white ground, and the link carries no
+     underline, so the fill was the only thing saying "this is a control" —
+     WCAG 2.2 SC 1.4.11 wants 3:1 for the boundary of one. The edge is the
+     design's --chart-2 brown darkened to clear AA (mobile theme.ts calls it
+     brandText): 5.04:1 here. Text contrast is unaffected — the ink label
+     stays at 7.82:1 on the gold. */
   .btn { display: inline-block; background: #d4a574; color: #1a1a1a; text-decoration: none;
+    border: 1px solid #826b4f;
     padding: 12px 20px; border-radius: 8px; font-weight: 600;
     transition: background-color 150ms; }
   .btn:hover, .btn:active { background: #c49464; }
+  /* The page's one control, and a keyboard had nothing to go on. Ink reads
+     unambiguously on both the gold and the white, so one ring serves wherever
+     focus lands. */
+  .btn:focus-visible { outline: 2px solid #1a1a1a; outline-offset: 3px; }
   .hint { font-size: 14px; }
   .btn + .hint { margin-top: 16px; }
 </style></head><body><div class="card">

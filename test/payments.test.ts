@@ -256,6 +256,37 @@ describe('the payment return path carries no order access token (D3)', () => {
 // same-tab path this page IS the app's tab, so it has to look like the app.
 // ---------------------------------------------------------------------------
 
+/**
+ * The page's stylesheet, comments stripped.
+ *
+ * `rule()` splits the sheet on braces, so a comment between two rules becomes
+ * part of the next rule's SELECTOR and every assertion against it silently
+ * reads `''` and passes. Comments are prose and may be reworded; only
+ * declarations are asserted on.
+ */
+function stylesheet(body: string): string {
+  const css = /<style>([\s\S]*?)<\/style>/.exec(body)?.[1] ?? '';
+  expect(css, 'the page renders no <style> block').not.toBe('');
+  return css.replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+/** One rule's declarations, by exact selector. Anchored at `^` or a closing
+ *  brace so a longer selector ending in the same text (`.card p` for `p`)
+ *  cannot stand in for it. */
+/** One rule's declarations, by exact selector. Anchored at `^` or a closing
+ *  brace so a longer selector ending in the same text (`.card p` for `p`)
+ *  cannot stand in for it. */
+/** One rule's declarations, by EXACT selector: the sheet is split into rules
+ *  and the selector compared whole, so a longer one ending in the same text
+ *  (`.card p` for `p`) cannot stand in for it, and an at-rule cannot hide a
+ *  second `.btn` from every assertion. */
+function rule(css: string, selector: string): string {
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (m[1].trim().replace(/\s+/g, ' ') === selector) return m[2];
+  }
+  return '';
+}
+
 describe('the result page renders the declared palette', () => {
   it('uses the gold fill with an ink label, and no dark variant', async () => {
     const order = await placeOrder();
@@ -266,25 +297,68 @@ describe('the result page renders the declared palette', () => {
 
     // No dark variant anywhere in the document, not only in the first <style>.
     expect(res.body).not.toMatch(/prefers-color-scheme|light dark/);
-    const css = /<style>([\s\S]*?)<\/style>/.exec(res.body)?.[1] ?? '';
-    const rule = (selector: string) =>
-      new RegExp(`(^|\\})\\s*${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? '';
+    const css = stylesheet(res.body);
     // `(^|[;\s])` keeps `color:` from matching inside `border-color:`.
     const decl = (body: string, prop: string, value: string) =>
       new RegExp(`(^|[;\\s])${prop}:\\s*${value};`).test(body);
 
     expect(css).toMatch(/color-scheme:\s*light;/);
-    expect(decl(rule('body'), 'background', '#ffffff')).toBe(true);
-    expect(decl(rule('body'), 'color', '#1a1a1a')).toBe(true);
-    expect(decl(rule('p'), 'color', '#666666')).toBe(true);
-    expect(rule('h1')).toMatch(/font-family:\s*ui-serif/);
+    expect(decl(rule(css, 'body'), 'background', '#ffffff')).toBe(true);
+    expect(decl(rule(css, 'body'), 'color', '#1a1a1a')).toBe(true);
+    expect(decl(rule(css, 'p'), 'color', '#666666')).toBe(true);
+    expect(rule(css, 'h1')).toMatch(/font-family:\s*ui-serif/);
     // A label on the gold fill is ink: white on #d4a574 is 2.23:1.
-    expect(decl(rule('\\.btn'), 'background', '#d4a574')).toBe(true);
-    expect(decl(rule('\\.btn'), 'color', '#1a1a1a')).toBe(true);
-    expect(decl(rule('\\.btn'), 'border-radius', '8px')).toBe(true);
-    expect(decl(rule('\\.btn:hover, \\.btn:active'), 'background', '#c49464')).toBe(true);
+    expect(decl(rule(css, '.btn'), 'background', '#d4a574')).toBe(true);
+    expect(decl(rule(css, '.btn'), 'color', '#1a1a1a')).toBe(true);
+    expect(decl(rule(css, '.btn'), 'border-radius', '8px')).toBe(true);
+    expect(decl(rule(css, '.btn:hover, .btn:active'), 'background', '#c49464')).toBe(true);
     for (const offPalette of ['#faf7f2', '#1c1917', '#78716c']) {
       expect(css).not.toContain(offPalette);
+    }
+  });
+
+  it('gives its one control a boundary and a focus ring', async () => {
+    const order = await placeOrder();
+    const res = await withConfig({ publicWebUrl: WEB }, () =>
+      get(`/checkout/cancel?order_id=${order.id}`),
+    );
+    expect(res.statusCode).toBe(200);
+    const css = stylesheet(res.body);
+    // The fill alone is 2.23:1 against the white ground and the link has no
+    // underline, so without an edge nothing identifies it as a control
+    // (WCAG 2.2 SC 1.4.11, 3:1). The brown is 5.04:1 here.
+    expect(rule(css, '.btn')).toMatch(/border:\s*1px solid #826b4f;/);
+    expect(rule(css, '.btn:focus-visible')).toMatch(/outline:\s*2px solid #1a1a1a;/);
+  });
+
+  it('admits no colour the palette does not declare, in any notation', async () => {
+    const order = await placeOrder();
+    const res = await withConfig({ publicWebUrl: WEB }, () =>
+      get(`/checkout/cancel?order_id=${order.id}`),
+    );
+    const css = stylesheet(res.body);
+    // A DENYLIST of the three colours already removed catches only the mistake
+    // already made. This is scoped to the properties that CARRY a colour, so
+    // `white`, `rgb(...)` and `hsl(...)` are refused as well as an undeclared
+    // hex — scanning for a hex whitelists a NOTATION, not a palette. A hex
+    // inside a quoted font name is out of scope for the same reason.
+    const bearing =
+      /^(color|background|background-color|border|border-color|outline|outline-color|fill|stroke)$/;
+    const declared = new Set(['#ffffff', '#1a1a1a', '#666666', '#d4a574', '#c49464', '#826b4f']);
+    const shape = new Set(['solid', 'none']);
+    for (const [, selector, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      for (const declaration of body.split(';')) {
+        const at = declaration.indexOf(':');
+        if (at === -1) continue;
+        const property = declaration.slice(0, at).trim().toLowerCase();
+        const value = declaration.slice(at + 1).trim().toLowerCase();
+        if (!bearing.test(property)) continue;
+        for (const token of value.split(/\s+/).filter(Boolean)) {
+          if (/^[\d.]/.test(token)) continue; // a length: 1px, 2px
+          if (shape.has(token)) continue;
+          expect(declared, `\`${selector.trim()} { ${property}: ${value} }\``).toContain(token);
+        }
+      }
     }
   });
 });
