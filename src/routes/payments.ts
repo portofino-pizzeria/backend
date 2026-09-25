@@ -56,18 +56,23 @@ function resultPage(opts: {
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>${escapeHtml(opts.title)}</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* The tenant's declared palette (domain_spec/visual-system; mobile
+     src/constants/theme.ts), light-only as the design is. A label on the gold
+     fill is ink, never white: white on #d4a574 is 2.23:1 and fails AA. */
+  :root { color-scheme: light; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
     display: grid; place-items: center; min-height: 100vh; margin: 0; padding: 24px;
-    background: #faf7f2; color: #1c1917; }
-  @media (prefers-color-scheme: dark) { body { background: #1c1917; color: #faf7f2; } }
+    background: #ffffff; color: #1a1a1a; }
   .card { max-width: 420px; text-align: center; }
   .emoji { font-size: 64px; line-height: 1; }
-  h1 { font-size: 22px; margin: 16px 0 8px; }
-  p { color: #78716c; margin: 0 0 20px; }
-  .btn { display: inline-block; background: #1c1917; color: #faf7f2; text-decoration: none;
-    padding: 12px 20px; border-radius: 12px; font-weight: 600; }
-  @media (prefers-color-scheme: dark) { .btn { background: #faf7f2; color: #1c1917; } }
+  h1 { font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+    font-size: 22px; margin: 16px 0 8px; }
+  p { color: #666666; margin: 0 0 20px; }
+  .btn { display: inline-block; background: #d4a574; color: #1a1a1a; text-decoration: none;
+    padding: 12px 20px; border-radius: 8px; font-weight: 600;
+    transition: background-color 150ms; }
+  .btn:hover, .btn:active { background: #c49464; }
   .hint { font-size: 14px; }
   .btn + .hint { margin-top: 16px; }
 </style></head><body><div class="card">

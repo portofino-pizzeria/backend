@@ -247,3 +247,44 @@ describe('the payment return path carries no order access token (D3)', () => {
     expect(source).not.toMatch(/accessToken|access_token/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The page renders the tenant's declared brand, and is light-only.
+//
+// It shipped with a stone palette (`#faf7f2` / `#1c1917` / `#78716c`) and a
+// dark variant, none of which is in `domain_spec/visual-system`. On the web's
+// same-tab path this page IS the app's tab, so it has to look like the app.
+// ---------------------------------------------------------------------------
+
+describe('the result page renders the declared palette', () => {
+  it('uses the gold fill with an ink label, and no dark variant', async () => {
+    const order = await placeOrder();
+    const res = await withConfig({ publicWebUrl: WEB }, () =>
+      get(`/checkout/cancel?order_id=${order.id}`),
+    );
+    expect(res.statusCode).toBe(200);
+
+    // No dark variant anywhere in the document, not only in the first <style>.
+    expect(res.body).not.toMatch(/prefers-color-scheme|light dark/);
+    const css = /<style>([\s\S]*?)<\/style>/.exec(res.body)?.[1] ?? '';
+    const rule = (selector: string) =>
+      new RegExp(`(^|\\})\\s*${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? '';
+    // `(^|[;\s])` keeps `color:` from matching inside `border-color:`.
+    const decl = (body: string, prop: string, value: string) =>
+      new RegExp(`(^|[;\\s])${prop}:\\s*${value};`).test(body);
+
+    expect(css).toMatch(/color-scheme:\s*light;/);
+    expect(decl(rule('body'), 'background', '#ffffff')).toBe(true);
+    expect(decl(rule('body'), 'color', '#1a1a1a')).toBe(true);
+    expect(decl(rule('p'), 'color', '#666666')).toBe(true);
+    expect(rule('h1')).toMatch(/font-family:\s*ui-serif/);
+    // A label on the gold fill is ink: white on #d4a574 is 2.23:1.
+    expect(decl(rule('\\.btn'), 'background', '#d4a574')).toBe(true);
+    expect(decl(rule('\\.btn'), 'color', '#1a1a1a')).toBe(true);
+    expect(decl(rule('\\.btn'), 'border-radius', '8px')).toBe(true);
+    expect(decl(rule('\\.btn:hover, \\.btn:active'), 'background', '#c49464')).toBe(true);
+    for (const offPalette of ['#faf7f2', '#1c1917', '#78716c']) {
+      expect(css).not.toContain(offPalette);
+    }
+  });
+});
