@@ -137,7 +137,7 @@ export async function buildApp(
     return {
       status: 'ok',
       commit: config.commit,
-      stripe: stripeEnabled ? 'live-keys' : 'mock',
+      stripe: stripeEnabled() ? 'live-keys' : 'mock',
       kitchen: kitchenAuthMode(),
       legal: legal.legal,
       ...(legal.legal === 'incomplete' ? { legalMissing: legal.missing } : {}),

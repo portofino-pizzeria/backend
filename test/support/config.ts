@@ -14,6 +14,7 @@ export interface MutableConfig {
   kitchenAuthDisabled: boolean;
   ownerMenuToken: string;
   publicWebUrl: string;
+  stripe: { secretKey: string; webhookSecret: string };
 }
 
 const mutableConfig = config as unknown as MutableConfig;
@@ -27,6 +28,7 @@ export async function withConfig<T>(
     kitchenAuthDisabled: mutableConfig.kitchenAuthDisabled,
     ownerMenuToken: mutableConfig.ownerMenuToken,
     publicWebUrl: mutableConfig.publicWebUrl,
+    stripe: { ...mutableConfig.stripe },
   };
   Object.assign(mutableConfig, patch);
   try {

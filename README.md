@@ -17,8 +17,8 @@ Customer (consumed by the mobile app — contract mirrors `../mobile/src/lib`):
 | `GET`  | `/api/shop` | Address, phone, printed hours, `deliveryUntil`, the live `status`, the `specialDays` of the next 30 days and the `legal` (Impressum) block. All of it from the rows the owner edits |
 | `POST` | `/api/orders` | Create order → `{ order, accessToken }`. `customer.name`, `customer.phone` (≥ 6 digits) and `customer.address` are **required** — every order is a delivery. Refusals are `400` with a German message the checkout shows verbatim. **`accessToken` is served here and nowhere else** — see "The order access token" |
 | `GET`  | `/api/orders/:id` | Order (status polling) → `{ order }`. **The customer block needs the order's access token** in an `Authorization: Bearer` header; without one the order comes back carrying `customerRedacted: true`, with a wrong one it is `401` |
-| `GET`  | `/api/payments/providers` | `{ stripe, paypal, mockFallback }` |
-| `POST` | `/api/payments/checkout` | Start hosted checkout → `{ url, provider }` |
+| `GET`  | `/api/payments/providers` | `{ stripe, paypal, mockFallback }` — `mockFallback` is `false` once Stripe is configured |
+| `POST` | `/api/payments/checkout` | Start hosted checkout → `{ url, provider }`. With Stripe configured only `provider: "stripe"` is accepted (`400` otherwise) |
 
 Kitchen dashboard (ours — Bearer `KITCHEN_TOKEN`, **required**; the guard fails
 closed, see "The kitchen guard" below):
@@ -51,6 +51,37 @@ Internal: `GET /api/health` (`commit`, `stripe`, `kitchen`, and `legal` /
 `legalMissing` — whether the Impressum is complete, served from an in-process
 cache so the health check never queries the database), hosted checkout pages
 under `/checkout/*`, and `POST /webhooks/stripe`.
+
+## Payments (Stripe)
+
+With no `STRIPE_SECRET_KEY` every checkout falls back to the built-in **mock**:
+`/checkout/mock` confirms the order without taking money, so the whole flow
+works locally. The moment a key is set the mock is **gone** — `/checkout/mock`
+answers `404` and the checkout route refuses `mock` and `paypal` (PayPal is not
+integrated; it was served by the mock). Otherwise anyone could mark any order
+paid by visiting one URL.
+
+An order becomes `paid` by either of two independent confirmations, both
+checked against Stripe rather than trusted:
+
+- the **success return URL** (`/checkout/return`) retrieves the Checkout
+  Session from Stripe and requires `payment_status: paid`;
+- the **webhook** (`POST /webhooks/stripe`, signed with `STRIPE_WEBHOOK_SECRET`).
+  Subscribe the endpoint to **`checkout.session.completed`** and
+  **`checkout.session.async_payment_succeeded`**. `completed` alone is not
+  payment for a delayed method (SEPA debit) — its `payment_status` is then
+  `unpaid` and the order waits for `async_payment_succeeded`.
+
+Local end-to-end with test keys and the [Stripe CLI](https://docs.stripe.com/stripe-cli):
+
+```bash
+stripe login
+stripe listen --forward-to localhost:4000/webhooks/stripe   # prints a whsec_… secret
+# .env: STRIPE_SECRET_KEY=sk_test_…  STRIPE_WEBHOOK_SECRET=<that whsec_…>
+npm run dev
+```
+
+Pay with card `4242 4242 4242 4242`, any future expiry, any CVC.
 
 ## Order lifecycle
 

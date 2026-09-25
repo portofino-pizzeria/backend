@@ -158,7 +158,28 @@ export const config = {
   deliveryFeeCents: 299,
 } as const;
 
-export const stripeEnabled = Boolean(config.stripe.secretKey);
+/**
+ * Whether real (test- or live-mode) Stripe keys are configured.
+ *
+ * A function rather than a constant for the same reason as `kitchenAuthMode`:
+ * the test suite patches `config` at runtime and reads the answer back.
+ */
+export function stripeEnabled(): boolean {
+  return Boolean(config.stripe.secretKey);
+}
+
+/**
+ * Whether the built-in mock checkout may confirm a payment.
+ *
+ * ONLY while no payment provider is configured. The mock confirms an order
+ * as paid on a bare GET, so leaving it reachable once Stripe is live would let
+ * anyone mark any order paid — a free order, straight to the kitchen — by
+ * visiting `/checkout/mock?order_id=…` or by asking the checkout route for the
+ * `mock` (or not-yet-integrated `paypal`) provider.
+ */
+export function mockPaymentsAllowed(): boolean {
+  return !stripeEnabled();
+}
 
 /**
  * How the kitchen guard will behave, from the two values above.

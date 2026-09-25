@@ -1,14 +1,20 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { config, stripeEnabled } from '../config.js';
+import { config, mockPaymentsAllowed, stripeEnabled } from '../config.js';
 import { now } from '../lib/clock.js';
 import { badRequest, notFound } from '../lib/http-errors.js';
 import { loadShopRules } from '../lib/shop-rules.js';
 import { refusalFor, shopStatus } from '../lib/shop.js';
 import { getOrder, markOrderPaid } from '../lib/order-service.js';
 import { paymentProviders, startCheckout } from '../payments/index.js';
-import { confirmStripeSession, parseWebhook } from '../payments/stripe.js';
+import {
+  matchesOrder,
+  parseWebhook,
+  retrievePaidSession,
+  webhookOutcome,
+  type PaidSession,
+} from '../payments/stripe.js';
 
 const checkoutSchema = z.object({
   orderId: z.string().min(1),
@@ -95,6 +101,51 @@ function resultPage(opts: {
 </div></body></html>`;
 }
 
+/**
+ * Mark an order paid from a session Stripe says is paid — only when that
+ * session paid THIS order's total. Returns whether the order is now paid.
+ *
+ * Both confirmation paths (the return page and the webhook) come through here
+ * and record the SESSION id, so `paymentReference` is the same whichever lands
+ * first, and is what the Stripe dashboard searches by for a refund.
+ */
+async function settle(log: FastifyBaseLogger, paid: PaidSession): Promise<boolean> {
+  let order = await getOrder(paid.orderId);
+  if (!order) {
+    // e.g. a `stripe trigger` test event.
+    log.warn({ sessionId: paid.sessionId, orderId: paid.orderId }, 'stripe: paid session for an unknown order');
+    return false;
+  }
+  if (!matchesOrder(paid, order)) {
+    log.error(
+      {
+        sessionId: paid.sessionId,
+        orderId: order.id,
+        paid: { amount: paid.amountTotal, currency: paid.currency },
+        expected: { amount: order.total, currency: order.currency },
+      },
+      'stripe: paid session does not match the order total — NOT marking paid',
+    );
+    return false;
+  }
+  if (order.status === 'pending_payment') {
+    const result = await markOrderPaid(order.id, 'stripe', paid.sessionId);
+    if (result.advanced) return true;
+    // Lost a race (the other confirmation path, or a kitchen cancel): judge
+    // the order as it is now.
+    order = result.order;
+  }
+  // Already confirmed by the other path (return page vs webhook).
+  if (order.payment?.reference === paid.sessionId) return order.status !== 'cancelled';
+  // Money arrived for an order no longer awaiting it (e.g. the kitchen
+  // cancelled it first). The order is left alone; refund from the dashboard.
+  log.error(
+    { sessionId: paid.sessionId, orderId: order.id, status: order.status },
+    'stripe: payment received for an order that is not awaiting payment — refund it',
+  );
+  return false;
+}
+
 export async function paymentRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/payments/providers -> { stripe, paypal, mockFallback }
   app.get('/api/payments/providers', async () => paymentProviders());
@@ -122,10 +173,12 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
 
   // --- Hosted checkout result pages (opened in the app's browser) ----------
 
-  // Mock checkout: visiting the page confirms the (fake) payment.
+  // Mock checkout: visiting the page confirms the (fake) payment. It does not
+  // exist once a real provider is configured — see `mockPaymentsAllowed`.
   app.get<{ Querystring: { order_id?: string } }>(
     '/checkout/mock',
     async (req, reply) => {
+      if (!mockPaymentsAllowed()) throw notFound('Not found.');
       const id = req.query.order_id;
       if (!id) throw badRequest('Missing order_id.');
       await markOrderPaid(id, 'mock', `mock_${Date.now()}`);
@@ -150,10 +203,10 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
       if (!orderId || !sessionId) throw badRequest('Missing order_id/session_id.');
 
       let paid = false;
-      if (stripeEnabled) {
-        const result = await confirmStripeSession(sessionId);
-        paid = result.paid && result.orderId === orderId;
-        if (paid) await markOrderPaid(orderId, 'stripe', sessionId);
+      if (stripeEnabled()) {
+        const session = await retrievePaidSession(sessionId);
+        // The query names the order; the session must be for that same one.
+        paid = !!session && session.orderId === orderId && (await settle(req.log, session));
       }
 
       return reply.type('text/html').send(
@@ -206,10 +259,17 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
       if (!sig || typeof sig !== 'string') throw badRequest('Missing signature.');
 
       const event = parseWebhook(req.body as Buffer, sig);
-      if (event.type === 'checkout.session.completed') {
-        const session = event.data.object as { metadata?: { orderId?: string }; client_reference_id?: string | null };
-        const orderId = session.metadata?.orderId ?? session.client_reference_id ?? null;
-        if (orderId) await markOrderPaid(orderId, 'stripe', event.id);
+      if (!event) throw badRequest('Invalid signature.');
+      // Always acknowledged once the signature verifies: an error status would
+      // make Stripe redeliver the event for days without changing the outcome.
+      const outcome = webhookOutcome(event);
+      if (outcome.kind === 'paid') {
+        await settle(req.log, outcome.session);
+      } else if (outcome.kind === 'failed') {
+        req.log.warn(
+          { sessionId: outcome.sessionId, orderId: outcome.orderId },
+          'stripe: delayed payment failed — order stays unpaid',
+        );
       }
       return reply.send({ received: true });
     });

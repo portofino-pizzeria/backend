@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 
-import { desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 
 import { config } from '../config.js';
 import { now } from './clock.js';
@@ -247,32 +247,34 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
   return { order: created, accessToken };
 }
 
-/** Mark an order paid (idempotent — safe to call from both return-URL + webhook). */
+/**
+ * Mark an order paid (idempotent — safe to call from both return-URL + webhook).
+ *
+ * Only advances out of `pending_payment`, and the check is IN the UPDATE, not a
+ * read before it: a kitchen cancel landing between a read and a write would
+ * otherwise be overwritten by `paid`. `advanced` says whether this call moved
+ * the order, so a caller can tell "paid now" from "was already something else".
+ */
 export async function markOrderPaid(
   id: string,
   provider: PaymentProvider,
   reference?: string,
-): Promise<Order> {
-  const [row] = await db.select().from(orders).where(eq(orders.id, id));
-  if (!row) throw notFound('Order not found.');
+): Promise<{ order: Order; advanced: boolean }> {
+  const moved = await db
+    .update(orders)
+    .set({
+      status: 'paid',
+      paymentProvider: provider,
+      ...(reference ? { paymentReference: reference } : {}),
+      paidAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(orders.id, id), eq(orders.status, 'pending_payment')))
+    .returning({ id: orders.id });
 
-  // Only advance out of pending_payment once; don't clobber a later state
-  // (e.g. the kitchen already moved it to "preparing").
-  if (row.status === 'pending_payment') {
-    await db
-      .update(orders)
-      .set({
-        status: 'paid',
-        paymentProvider: provider,
-        paymentReference: reference ?? row.paymentReference,
-        paidAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(orders.id, id));
-  }
-
-  const updated = await getOrder(id);
-  return updated!;
+  const order = await getOrder(id);
+  if (!order) throw notFound('Order not found.');
+  return { order, advanced: moved.length > 0 };
 }
 
 // --- Kitchen operations ----------------------------------------------------
