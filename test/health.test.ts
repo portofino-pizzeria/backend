@@ -94,6 +94,32 @@ describe('GET /api/health', () => {
     });
   });
 
+  // `payments` reports how an order gets confirmed as paid, so the deploy can
+  // warn about Stripe keys without a webhook secret. Literals, not
+  // `paymentsMode()` — the workflow matches on these exact strings.
+  describe('the payments field', () => {
+    it('reads "mock" with no Stripe key', async () => {
+      expect((await getHealth()).payments).toBe('mock');
+    });
+
+    it('reads "stripe-no-webhook" with a key but no webhook secret', async () => {
+      await withConfig({ stripe: { secretKey: 'sk_test_x', webhookSecret: '' } }, async () => {
+        expect((await getHealth()).payments).toBe('stripe-no-webhook');
+      });
+    });
+
+    it('reads "stripe" with both, and never carries either secret', async () => {
+      await withConfig(
+        { stripe: { secretKey: 'sk_test_geheim', webhookSecret: 'whsec_geheim' } },
+        async () => {
+          const res = await app.inject({ method: 'GET', url: '/api/health' });
+          expect(res.json<Record<string, unknown>>().payments).toBe('stripe');
+          expect(res.body).not.toContain('geheim');
+        },
+      );
+    });
+  });
+
   // `legal` reports whether the Impressum (§ 5 DDG) is complete, so a deploy
   // can warn about a public app that carries an incomplete one. It is served
   // from an in-process cache and NEVER from a query — this route is App

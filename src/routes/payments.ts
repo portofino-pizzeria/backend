@@ -1,9 +1,9 @@
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { config, mockPaymentsAllowed, stripeEnabled } from '../config.js';
+import { config, mockPaymentsAllowed, paymentsMode, stripeEnabled } from '../config.js';
 import { now } from '../lib/clock.js';
-import { badRequest, notFound } from '../lib/http-errors.js';
+import { badRequest, notFound, serviceUnavailable } from '../lib/http-errors.js';
 import { loadShopRules } from '../lib/shop-rules.js';
 import { refusalFor, shopStatus } from '../lib/shop.js';
 import { getOrder, markOrderPaid } from '../lib/order-service.js';
@@ -255,6 +255,18 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
     );
 
     scope.post('/webhooks/stripe', async (req, reply) => {
+      // Without both secrets no event can be verified, so this comes before the
+      // signature check. 503, not a thrown 500: if an endpoint IS registered in
+      // Stripe, Stripe retries a failed event for up to ~3 days, so wiring the
+      // secret in that window still confirms the orders. `warn`, not `error`:
+      // the route is public, and boot + deploy already carry the loud signal.
+      if (paymentsMode() !== 'stripe') {
+        req.log.warn(
+          { payments: paymentsMode() },
+          'stripe: webhook received but STRIPE_SECRET_KEY/STRIPE_WEBHOOK_SECRET are not both set',
+        );
+        throw serviceUnavailable('Stripe webhook is not configured.');
+      }
       const sig = req.headers['stripe-signature'];
       if (!sig || typeof sig !== 'string') throw badRequest('Missing signature.');
 

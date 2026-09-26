@@ -182,6 +182,28 @@ export function mockPaymentsAllowed(): boolean {
 }
 
 /**
+ * How an order gets confirmed as paid, from the two Stripe values above.
+ *
+ * - `stripe`: key and webhook secret are both set — both confirmations work.
+ * - `stripe-no-webhook`: a key without `STRIPE_WEBHOOK_SECRET`. Only the success
+ *   return URL can confirm, so a diner who closes the browser before the
+ *   redirect, and every delayed method (SEPA debit, confirmed only by
+ *   `async_payment_succeeded`), leaves a PAID order in `pending_payment` that
+ *   the kitchen never sees.
+ * - `mock`: no key — the built-in mock confirms without taking money. A
+ *   webhook secret without a key is also `mock`: nothing can verify with it.
+ *
+ * Reported by `/api/health` so the deploy pipeline can warn, and logged at
+ * boot. A function for the same reason as `stripeEnabled`.
+ */
+export type PaymentsMode = 'stripe' | 'stripe-no-webhook' | 'mock';
+
+export function paymentsMode(): PaymentsMode {
+  if (!stripeEnabled()) return 'mock';
+  return config.stripe.webhookSecret ? 'stripe' : 'stripe-no-webhook';
+}
+
+/**
  * How the kitchen guard will behave, from the two values above.
  *
  * - `token`: `KITCHEN_TOKEN` is set; every kitchen request must carry it.
