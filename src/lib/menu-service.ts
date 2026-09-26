@@ -132,13 +132,25 @@ export async function loadMenu(
     sortOrder: r.sortOrder,
   }));
 
-  // Filtered like the items, so the diner's legend never carries a code that
-  // only an unavailable extra prints.
-  const extras = buildExtras(
-    options.includeUnavailable ? extraRows : extraRows.filter((e) => e.available),
-    extraPriceRows,
-    variantRows,
-  );
+  const allExtras = buildExtras(extraRows, extraPriceRows, variantRows);
+
+  // The diner's menu carries only extras a diner can actually put on a dish:
+  // available, and priced for a size some dish in an extras category is sold
+  // in (an extra whose only size was renamed away can be bought on nothing).
+  // Filtered HERE, before the legend is built, so the diner's legend never
+  // carries a code that only a hidden extra prints. The editor sees them all.
+  let extras = allExtras;
+  if (!options.includeUnavailable) {
+    const offering = new Set(categories.filter((c) => c.offersExtras).map((c) => c.id));
+    const liveSizes = new Set(
+      items
+        .filter((item) => offering.has(item.categoryId))
+        .flatMap((item) => item.variants.map((v) => sizeKey(v.label))),
+    );
+    extras = allExtras.filter(
+      (e) => e.available && e.prices.some((p) => liveSizes.has(sizeKey(p.size))),
+    );
+  }
 
   return {
     categories,
@@ -200,9 +212,6 @@ function buildExtras(
 
 /** The public payload: the same menu with the owner-only fields removed. */
 export function toPublicMenu(menu: AdminMenu): Menu {
-  const liveSizes = new Set(
-    menu.items.flatMap((item) => item.variants.map((v) => sizeKey(v.label))),
-  );
   return {
     categories: menu.categories,
     items: menu.items.map((item) => {
@@ -210,11 +219,8 @@ export function toPublicMenu(menu: AdminMenu): Menu {
       return rest;
     }),
     allergenLegend: menu.allergenLegend,
-    // An extra with no price for any size a dish is sold in (its only size was
-    // renamed away) cannot be bought on anything — so a diner is not shown it.
-    extras: menu.extras
-      .filter((extra) => extra.available && extra.prices.some((p) => liveSizes.has(sizeKey(p.size))))
-      .map(({ available: _available, sortOrder: _sortOrder, ...rest }) => rest),
+    // Already filtered to what a diner can buy — see `loadMenu`.
+    extras: menu.extras.map(({ available: _available, sortOrder: _sortOrder, ...rest }) => rest),
   };
 }
 

@@ -293,6 +293,26 @@ describe('the owner prices an extra per size', () => {
     expect((res.body.extra as AdminMenuExtra).prices).toEqual([{ size: BLECH, price: 300 }]);
   });
 
+  it('neither lists a hidden extra nor leaves its allergen in the diner legend', async () => {
+    await seedPizzeria();
+    // Priced only for the salad's size, whose category offers no extras.
+    await admin('POST', '/api/admin/menu/allergens', { code: 'z', labelDe: 'Testallergen' });
+    await admin('POST', '/api/admin/menu/extras', {
+      name: 'Croutons',
+      allergenCodes: ['z'],
+      prices: [{ size: 'groß', priceCents: 80 }],
+    });
+    await admin('DELETE', '/api/admin/menu/allergens/z');
+
+    const menu = await publicMenu();
+    expect(menu.extras.map((e) => e.id)).not.toContain('croutons');
+    expect(menu.allergenLegend.map((e) => e.code)).not.toContain('z');
+    // The editor still sees it, and its unresolved code.
+    const editor = (await admin('GET', '/api/admin/menu')).body as unknown as AdminMenu;
+    expect(editor.extras.map((e) => e.id)).toContain('croutons');
+    expect(editor.allergenLegend.find((e) => e.code === 'z')?.resolved).toBe(false);
+  });
+
   it('does not cap dish prices at the extras cap', async () => {
     await seedPizzeria();
     const res = await admin('PATCH', '/api/admin/menu/items/calzone', {
