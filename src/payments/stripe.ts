@@ -34,7 +34,13 @@ export async function createStripeCheckout(order: Order): Promise<string> {
       price_data: {
         currency: order.currency.toLowerCase(),
         unit_amount: l.unitPrice,
-        product_data: { name: l.name },
+        // The extras are in `unit_amount`, so the Stripe receipt names them —
+        // otherwise a diner reads "Margherita 9,40 €" for a 7,90 € pizza.
+        product_data: {
+          name: l.extras?.length
+            ? `${l.name} + ${l.extras.map((e) => e.name).join(', ')}`
+            : l.name,
+        },
       },
     }));
 

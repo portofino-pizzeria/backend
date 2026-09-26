@@ -82,7 +82,7 @@ describe('isolation between tests', () => {
   it('starts the next test from an empty database', async () => {
     const menu = await getMenu();
 
-    expect(menu).toEqual({ categories: [], items: [], allergenLegend: [] });
+    expect(menu).toEqual({ categories: [], items: [], allergenLegend: [], extras: [] });
   });
 });
 

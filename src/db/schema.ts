@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   serial,
   text,
   timestamp,
@@ -20,6 +21,9 @@ export const menuCategories = pgTable('menu_categories', {
   label: text('label').notNull(), // German — authoritative
   labelEn: text('label_en'), // optional translation
   sortOrder: integer('sort_order').notNull().default(0),
+  // Whether diners may add extra ingredients (`menuExtras`) to the dishes in
+  // this category. On for Pizza; the owner switches it per category.
+  offersExtras: boolean('offers_extras').notNull().default(false),
 });
 
 // The allergen legend: code -> German label -> optional English label.
@@ -97,6 +101,47 @@ export const menuItemVariants = pgTable(
       t.itemId,
       t.label,
     ),
+  }),
+);
+
+// Extra ingredients ("Zutaten") a diner can add to a dish in a category that
+// offers them — "extra Käse", "Salami". Owned by the owner's editor; nothing is
+// seeded, because Portofino's own menu publishes no extras prices and an
+// invented price would be charged to a diner.
+//
+// An extra carries its own allergen codes, same rules as `menu_items`: adding
+// cheese to a dish adds milk, and a diner reads that before ordering.
+export const menuExtras = pgTable('menu_extras', {
+  id: text('id').primaryKey(), // slug, e.g. "kaese"
+  name: text('name').notNull(), // German — authoritative
+  nameEn: text('name_en'),
+  allergenCodes: text('allergen_codes')
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
+  available: boolean('available').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+});
+
+// The price of one extra on one size. Sizes are the variant labels the pizzas
+// already carry ("klein 22cm", "groß 28cm", "Blech 30x50cm"), matched
+// case-insensitively — so a Blech pays the Blech price for its extra cheese.
+//
+// A size with no row here means "this extra is not offered on that size",
+// never "free": the price is NOT NULL and positive, and order pricing refuses
+// an extra on a size it has no price for.
+export const menuExtraPrices = pgTable(
+  'menu_extra_prices',
+  {
+    extraId: text('extra_id')
+      .notNull()
+      .references(() => menuExtras.id, { onDelete: 'cascade' }),
+    sizeLabel: text('size_label').notNull(),
+    priceCents: integer('price_cents').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.extraId, t.sizeLabel] }),
+    positive: check('menu_extra_prices_positive', sql`${t.priceCents} > 0`),
   }),
 );
 
@@ -185,8 +230,16 @@ export const orderLines = pgTable('order_lines', {
   variantId: text('variant_id').notNull(),
   name: text('name').notNull(),
   variantLabel: text('variant_label').notNull(),
-  unitPrice: integer('unit_price').notNull(), // cents
+  // Cents for ONE unit: the variant's price plus every extra on the line, so
+  // `unitPrice * quantity` stays the line total everywhere it is summed.
+  unitPrice: integer('unit_price').notNull(),
   quantity: integer('quantity').notNull(),
+  // The extras on this line, snapshotted like the name and price:
+  // `[{ extraId, name, price }]`, price in cents per unit. Empty for a plain dish.
+  extras: jsonb('extras')
+    .$type<{ extraId: string; name: string; price: number }[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
 });
 
 // One row per dataset that has been bootstrapped into this database, written
@@ -364,6 +417,8 @@ export type MenuCategoryRow = typeof menuCategories.$inferSelect;
 export type AllergenLegendRow = typeof allergenLegend.$inferSelect;
 export type MenuItemRow = typeof menuItems.$inferSelect;
 export type MenuItemVariantRow = typeof menuItemVariants.$inferSelect;
+export type MenuExtraRow = typeof menuExtras.$inferSelect;
+export type MenuExtraPriceRow = typeof menuExtraPrices.$inferSelect;
 export type OrderRow = typeof orders.$inferSelect;
 export type OrderLineRow = typeof orderLines.$inferSelect;
 export type ShopProfileRow = typeof shopProfile.$inferSelect;

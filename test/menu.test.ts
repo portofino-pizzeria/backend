@@ -43,6 +43,7 @@ describe('GET /api/menu — shape', () => {
     expect(Object.keys(menu).sort()).toEqual([
       'allergenLegend',
       'categories',
+      'extras',
       'items',
     ]);
     expect(menu.categories).toEqual([
@@ -309,6 +310,6 @@ describe('GET /api/menu — empty database', () => {
   it('returns empty lists rather than failing', async () => {
     const menu = await getMenu();
 
-    expect(menu).toEqual({ categories: [], items: [], allergenLegend: [] });
+    expect(menu).toEqual({ categories: [], items: [], allergenLegend: [], extras: [] });
   });
 });

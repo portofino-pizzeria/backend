@@ -14,14 +14,17 @@ import { badRequest } from '../lib/http-errors.js';
 import { requireOwnerAuth } from '../lib/owner-auth.js';
 import {
   createCategory,
+  createExtra,
   createMenuItem,
   deleteAllergen,
   deleteCategory,
+  deleteExtra,
   deleteMenuItem,
   loadAdminMenu,
   reorderCategories,
   setMenuItemAvailability,
   updateCategory,
+  updateExtra,
   updateMenuItem,
   upsertAllergen,
 } from '../lib/menu-admin-service.js';
@@ -93,12 +96,40 @@ const createCategorySchema = z.object({
   label: z.string({ required_error: 'Die Kategorie braucht einen Namen.' }).max(200),
   labelEn: z.string().max(200).nullable().optional(),
   sortOrder: z.number().int().optional(),
+  offersExtras: z.boolean().optional(),
 });
 
 const updateCategorySchema = z.object({
   label: z.string().max(200).optional(),
   labelEn: z.string().max(200).nullable().optional(),
   sortOrder: z.number().int().optional(),
+  offersExtras: z.boolean().optional(),
+});
+
+const extraPriceSchema = z.object({
+  size: z.string({ required_error: 'Jeder Preis braucht eine Größe.' }).max(120),
+  priceCents,
+});
+
+const createExtraSchema = z.object({
+  id: z.string().max(120).optional(),
+  name: z.string({ required_error: 'Die Zutat braucht einen Namen.' }).max(200),
+  nameEn: z.string().max(200).nullable().optional(),
+  allergenCodes: allergenCodesSchema.optional(),
+  confirmNoAllergens: z.boolean().optional(),
+  available: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+  prices: z.array(extraPriceSchema).max(20).default([]),
+});
+
+const updateExtraSchema = z.object({
+  name: z.string().max(200).optional(),
+  nameEn: z.string().max(200).nullable().optional(),
+  allergenCodes: allergenCodesSchema.optional(),
+  confirmNoAllergens: z.boolean().optional(),
+  available: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+  prices: z.array(extraPriceSchema).max(20).optional(),
 });
 
 const reorderCategoriesSchema = z.object({
@@ -229,6 +260,32 @@ export async function adminMenuRoutes(app: FastifyInstance): Promise<void> {
       return { deleted: req.params.id };
     },
   );
+
+  // --- Extras (Zutaten) ----------------------------------------------------
+
+  // POST /api/admin/menu/extras -> { extra }
+  app.post<{ Body: unknown }>('/api/admin/menu/extras', async (req, reply) => {
+    const extra = await createExtra(parse(createExtraSchema, req.body));
+    reply.status(201);
+    return { extra };
+  });
+
+  // PATCH /api/admin/menu/extras/:id -> { extra }
+  //
+  // Absent fields are left alone; `prices`, when present, is the complete set.
+  app.patch<{ Params: { id: string }; Body: unknown }>(
+    '/api/admin/menu/extras/:id',
+    async (req) => {
+      const extra = await updateExtra(req.params.id, parse(updateExtraSchema, req.body));
+      return { extra };
+    },
+  );
+
+  // DELETE /api/admin/menu/extras/:id -> { deleted }
+  app.delete<{ Params: { id: string } }>('/api/admin/menu/extras/:id', async (req) => {
+    await deleteExtra(req.params.id);
+    return { deleted: req.params.id };
+  });
 
   // --- Allergen legend -----------------------------------------------------
 

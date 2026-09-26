@@ -33,14 +33,16 @@ import { db } from '../db/client.js';
 import {
   allergenLegend,
   menuCategories,
+  menuExtraPrices,
+  menuExtras,
   menuItemVariants,
   menuItems,
   type AllergenLegendRow,
   type MenuCategoryRow,
 } from '../db/schema.js';
-import type { AdminMenu, AdminMenuItem, MenuVariant } from '../types.js';
+import type { AdminMenu, AdminMenuExtra, AdminMenuItem, MenuVariant } from '../types.js';
 import { HttpError, badRequest, conflict, notFound } from './http-errors.js';
-import { loadMenu } from './menu-service.js';
+import { loadMenu, sizeKey } from './menu-service.js';
 
 /** The transaction handle drizzle hands to `db.transaction(cb)`. */
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -97,12 +99,45 @@ export interface CategoryInput {
   label: string;
   labelEn?: string | null;
   sortOrder?: number;
+  offersExtras?: boolean;
 }
 
 export interface CategoryPatch {
   label?: string;
   labelEn?: string | null;
   sortOrder?: number;
+  offersExtras?: boolean;
+}
+
+export interface ExtraPriceInput {
+  /** A size as the dishes print it — a variant label, e.g. "groß 28cm". */
+  size: string;
+  /** Integer cents, greater than zero. */
+  priceCents: number;
+}
+
+export interface CreateExtraInput {
+  id?: string;
+  name: string;
+  nameEn?: string | null;
+  allergenCodes?: string[];
+  /** Required when the resulting allergen list would be empty. */
+  confirmNoAllergens?: boolean;
+  available?: boolean;
+  sortOrder?: number;
+  prices: ExtraPriceInput[];
+}
+
+export interface UpdateExtraInput {
+  name?: string;
+  nameEn?: string | null;
+  /** Absent means "untouched", exactly as on an item. */
+  allergenCodes?: string[];
+  confirmNoAllergens?: boolean;
+  available?: boolean;
+  sortOrder?: number;
+  /** Absent means "untouched". Present means "this is the complete set". */
+  prices?: ExtraPriceInput[];
 }
 
 export interface AllergenInput {
@@ -366,6 +401,7 @@ export async function createCategory(
           label,
           labelEn: emptyToNull(input.labelEn),
           sortOrder: input.sortOrder ?? 0,
+          offersExtras: input.offersExtras ?? false,
         })
         .returning();
       return row!;
@@ -396,6 +432,7 @@ export async function updateCategory(
           ...(label !== undefined ? { label } : {}),
           ...(patch.labelEn !== undefined ? { labelEn: emptyToNull(patch.labelEn) } : {}),
           ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+          ...(patch.offersExtras !== undefined ? { offersExtras: patch.offersExtras } : {}),
         })
         .where(eq(menuCategories.id, id))
         .returning();
@@ -473,6 +510,134 @@ export async function deleteCategory(id: string): Promise<void> {
       await tx.delete(menuCategories).where(eq(menuCategories.id, id));
     }),
   );
+}
+
+// --- Extras ----------------------------------------------------------------
+//
+// Extra ingredients carry the same two safety properties as a dish: their
+// allergen codes cannot be lost silently (property 1), and a price that cannot
+// be charged correctly cannot be stored (property 2).
+
+export async function createExtra(input: CreateExtraInput): Promise<AdminMenuExtra> {
+  const name = requireText(input.name, 'Der Name der Zutat');
+  const id = normaliseId(input.id?.trim() || slugify(name), 'Die Kennung');
+  const prices = normaliseExtraPrices(input.prices);
+  const available = input.available ?? true;
+
+  const codes = normaliseCodes(input.allergenCodes ?? []);
+  assertAllergenIntent(codes, input.confirmNoAllergens);
+  assertExtraOrderable(available, prices.length, name);
+
+  await withStorageErrors(() =>
+    db.transaction(async (tx) => {
+      const [clash] = await tx
+        .select({ id: menuExtras.id })
+        .from(menuExtras)
+        .where(eq(menuExtras.id, id));
+      if (clash) {
+        throw conflict(
+          `Es gibt bereits eine Zutat mit der Kennung „${id}“. Bitte eine andere Kennung wählen.`,
+        );
+      }
+      await assertCodesAreKnown(tx, codes, []);
+      await assertSizesAreKnown(tx, prices, []);
+
+      await tx.insert(menuExtras).values({
+        id,
+        name,
+        nameEn: emptyToNull(input.nameEn),
+        allergenCodes: codes,
+        available,
+        sortOrder: input.sortOrder ?? 0,
+      });
+      if (prices.length > 0) {
+        await tx.insert(menuExtraPrices).values(
+          prices.map((p) => ({ extraId: id, sizeLabel: p.size, priceCents: p.priceCents })),
+        );
+      }
+    }),
+  );
+  return loadExtra(id);
+}
+
+export async function updateExtra(
+  id: string,
+  input: UpdateExtraInput,
+): Promise<AdminMenuExtra> {
+  const name =
+    input.name === undefined ? undefined : requireText(input.name, 'Der Name der Zutat');
+  const prices = input.prices === undefined ? undefined : normaliseExtraPrices(input.prices);
+
+  await withStorageErrors(() =>
+    db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(menuExtras).where(eq(menuExtras.id, id));
+      if (!existing) throw notFound(`Es gibt keine Zutat mit der Kennung „${id}“.`);
+
+      // Property 1: absent leaves the stored codes exactly as they were.
+      let codes = existing.allergenCodes;
+      if (input.allergenCodes !== undefined) {
+        codes = normaliseCodes(input.allergenCodes);
+        assertAllergenIntent(codes, input.confirmNoAllergens);
+        await assertCodesAreKnown(tx, codes, existing.allergenCodes);
+      }
+
+      const existingPrices = await tx
+        .select()
+        .from(menuExtraPrices)
+        .where(eq(menuExtraPrices.extraId, id));
+      if (prices) {
+        await assertSizesAreKnown(
+          tx,
+          prices,
+          existingPrices.map((p) => p.sizeLabel),
+        );
+      }
+
+      const available = input.available ?? existing.available;
+      assertExtraOrderable(
+        available,
+        prices ? prices.length : existingPrices.length,
+        name ?? existing.name,
+      );
+
+      const patch = {
+        ...(name !== undefined ? { name } : {}),
+        ...(input.nameEn !== undefined ? { nameEn: emptyToNull(input.nameEn) } : {}),
+        ...(input.allergenCodes !== undefined ? { allergenCodes: codes } : {}),
+        ...(input.available !== undefined ? { available } : {}),
+        ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+      };
+      if (Object.keys(patch).length > 0) {
+        await tx.update(menuExtras).set(patch).where(eq(menuExtras.id, id));
+      }
+
+      // The price list is replaced whole, inside the same transaction: a diner
+      // never sees an extra with half its new prices.
+      if (prices) {
+        await tx.delete(menuExtraPrices).where(eq(menuExtraPrices.extraId, id));
+        if (prices.length > 0) {
+          await tx.insert(menuExtraPrices).values(
+            prices.map((p) => ({ extraId: id, sizeLabel: p.size, priceCents: p.priceCents })),
+          );
+        }
+      }
+    }),
+  );
+  return loadExtra(id);
+}
+
+/** Remove an extra and its prices. Past orders keep their own snapshot of the
+ *  extra's name and price. */
+export async function deleteExtra(id: string): Promise<void> {
+  await withStorageErrors(async () => {
+    const deleted = await db
+      .delete(menuExtras)
+      .where(eq(menuExtras.id, id))
+      .returning({ id: menuExtras.id });
+    if (deleted.length === 0) {
+      throw notFound(`Es gibt keine Zutat mit der Kennung „${id}“.`);
+    }
+  });
 }
 
 // --- Allergen legend -------------------------------------------------------
@@ -669,6 +834,74 @@ function normaliseVariants(
   return out;
 }
 
+/**
+ * Turn the submitted per-size prices into rows (property 2): no price without
+ * a size, no size twice, no zero, negative or fractional price.
+ */
+function normaliseExtraPrices(inputs: ExtraPriceInput[]): ExtraPriceInput[] {
+  const out: ExtraPriceInput[] = [];
+  const seen = new Set<string>();
+  for (const [index, input] of inputs.entries()) {
+    const size = (input.size ?? '').trim();
+    if (!size) {
+      throw badRequest(
+        `Preis ${index + 1} hat keine Größe. Bitte eine Größe der Speisekarte wählen ` +
+          '(z. B. „groß 28cm“).',
+      );
+    }
+    const cents = input.priceCents;
+    if (typeof cents !== 'number' || !Number.isInteger(cents) || cents <= 0) {
+      throw badRequest(
+        `Der Preis für „${size}“ muss eine ganze Zahl in Cent größer als 0 sein ` +
+          '(z. B. 150 für 1,50 €).',
+      );
+    }
+    const key = sizeKey(size);
+    if (seen.has(key)) {
+      throw badRequest(`Die Größe „${size}“ hat mehr als einen Preis. Bitte nur einen angeben.`);
+    }
+    seen.add(key);
+    out.push({ size, priceCents: cents });
+  }
+  return out;
+}
+
+/**
+ * The typo guard for sizes, shaped like `assertCodesAreKnown`: a price is
+ * matched to a dish by its size label, so "gross 28cm" typed for "groß 28cm"
+ * would be a price that silently never applies. Every size must be a variant
+ * label some dish on the menu carries — or one this extra already had, so a
+ * renamed size never blocks an unrelated edit.
+ */
+async function assertSizesAreKnown(
+  tx: Tx,
+  prices: ExtraPriceInput[],
+  alreadyStored: string[],
+): Promise<void> {
+  if (prices.length === 0) return;
+  const rows = await tx
+    .selectDistinct({ label: menuItemVariants.label })
+    .from(menuItemVariants);
+  const known = new Set([...rows.map((r) => sizeKey(r.label)), ...alreadyStored.map(sizeKey)]);
+  const unknown = prices.find((p) => !known.has(sizeKey(p.size)));
+  if (unknown) {
+    throw badRequest(
+      `Die Größe „${unknown.size}“ gibt es auf der Speisekarte nicht. Bitte eine Größe ` +
+        'wählen, wie sie bei den Gerichten steht (z. B. „groß 28cm“).',
+    );
+  }
+}
+
+/** An extra a diner can see must be an extra a diner can buy on some size. */
+function assertExtraOrderable(available: boolean, priceCount: number, name: string): void {
+  if (available && priceCount === 0) {
+    throw badRequest(
+      `„${name}“ hat für keine Größe einen Preis und kann deshalb nicht angeboten werden. ` +
+        'Bitte mindestens einen Preis angeben — oder die Zutat auf „nicht verfügbar“ setzen.',
+    );
+  }
+}
+
 /** Codes exactly as printed, de-duplicated, blanks dropped. Case is preserved:
  *  the harvest distinguishes "a" from "V". */
 function normaliseCodes(codes: string[]): string[] {
@@ -794,6 +1027,14 @@ async function countVariants(tx: Tx, itemId: string): Promise<number> {
     .from(menuItemVariants)
     .where(eq(menuItemVariants.itemId, itemId));
   return rows.length;
+}
+
+/** Re-read one extra through the same reader the menu routes use. */
+async function loadExtra(id: string): Promise<AdminMenuExtra> {
+  const menu = await loadAdminMenu();
+  const extra = menu.extras.find((e) => e.id === id);
+  if (!extra) throw notFound(`Es gibt keine Zutat mit der Kennung „${id}“.`);
+  return extra;
 }
 
 /** Re-read one item through the same shape the menu routes return. */

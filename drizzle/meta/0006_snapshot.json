@@ -1,9 +1,53 @@
 {
   "id": "ff38ab59-3151-4b86-b412-b0539d216b32",
-  "prevId": "14917719-8ee2-436a-9913-bad4493982d5",
+  "prevId": "bc23e808-6002-4b79-92da-ddfb6eaefc3d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.admin_changes": {
+      "name": "admin_changes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "entity": {
+          "name": "entity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "before": {
+          "name": "before",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after": {
+          "name": "after",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "at": {
+          "name": "at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.allergen_legend": {
       "name": "allergen_legend",
       "schema": "",
@@ -498,6 +542,299 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.shop_profile": {
+      "name": "shop_profile",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "street": {
+          "name": "street",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "postal_code": {
+          "name": "postal_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "city": {
+          "name": "city",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phone_display": {
+          "name": "phone_display",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phone_e164": {
+          "name": "phone_e164",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delivery_until": {
+          "name": "delivery_until",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "holiday_open": {
+          "name": "holiday_open",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "holiday_close": {
+          "name": "holiday_close",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ruhetag_beats_holiday": {
+          "name": "ruhetag_beats_holiday",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "legal_owner_name": {
+          "name": "legal_owner_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "legal_form": {
+          "name": "legal_form",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "vat_id": {
+          "name": "vat_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "register_court": {
+          "name": "register_court",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "register_number": {
+          "name": "register_number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "legal_confirmed_at": {
+          "name": "legal_confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "shop_profile_singleton": {
+          "name": "shop_profile_singleton",
+          "value": "\"shop_profile\".\"id\" = 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.shop_special_days": {
+      "name": "shop_special_days",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "date": {
+          "name": "date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "month_day": {
+          "name": "month_day",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed": {
+          "name": "closed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "open": {
+          "name": "open",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "close": {
+          "name": "close",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delivery_until": {
+          "name": "delivery_until",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "confirmed": {
+          "name": "confirmed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        }
+      },
+      "indexes": {
+        "shop_special_days_date_unique": {
+          "name": "shop_special_days_date_unique",
+          "columns": [
+            {
+              "expression": "date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"shop_special_days\".\"date\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "shop_special_days_month_day_unique": {
+          "name": "shop_special_days_month_day_unique",
+          "columns": [
+            {
+              "expression": "month_day",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"shop_special_days\".\"month_day\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "shop_special_days_date_xor_month_day": {
+          "name": "shop_special_days_date_xor_month_day",
+          "value": "(\"shop_special_days\".\"date\" is null) <> (\"shop_special_days\".\"month_day\" is null)"
+        },
+        "shop_special_days_open_needs_close": {
+          "name": "shop_special_days_open_needs_close",
+          "value": "\"shop_special_days\".\"closed\" or (\"shop_special_days\".\"close\" is not null and (\"shop_special_days\".\"open\" is not null or \"shop_special_days\".\"month_day\" is not null))"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.shop_weekly_hours": {
+      "name": "shop_weekly_hours",
+      "schema": "",
+      "columns": {
+        "weekday": {
+          "name": "weekday",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "open": {
+          "name": "open",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "close": {
+          "name": "close",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "shop_weekly_hours_weekday_range": {
+          "name": "shop_weekly_hours_weekday_range",
+          "value": "\"shop_weekly_hours\".\"weekday\" between 1 and 7"
+        },
+        "shop_weekly_hours_both_or_neither": {
+          "name": "shop_weekly_hours_both_or_neither",
+          "value": "(\"shop_weekly_hours\".\"open\" is null) = (\"shop_weekly_hours\".\"close\" is null)"
+        }
+      },
       "isRLSEnabled": false
     }
   },

@@ -14,15 +14,19 @@ import { db } from '../db/client.js';
 import {
   allergenLegend,
   menuCategories,
+  menuExtraPrices,
+  menuExtras,
   menuItemVariants,
   menuItems,
 } from '../db/schema.js';
 import type {
   AdminMenu,
+  AdminMenuExtra,
   AdminMenuItem,
   AllergenLegendEntry,
   Menu,
   MenuCategory,
+  MenuExtraPrice,
   MenuVariant,
 } from '../types.js';
 
@@ -30,6 +34,25 @@ import type {
  *  German, because the menu is German-authoritative. Never omit the code. */
 export const UNRESOLVED_LABEL_DE = 'unbekannt';
 export const UNRESOLVED_LABEL_EN = 'unknown';
+
+/**
+ * The key an extra's price is matched on: a variant label, trimmed and
+ * lower-cased, so "Groß 28cm" and "groß 28cm" are one size. Used by the
+ * editor's validation and by order pricing alike — one rule, one place.
+ */
+export function sizeKey(label: string): string {
+  return label.trim().toLocaleLowerCase('de-DE');
+}
+
+/** The price of `extra` on the variant labelled `variantLabel`, or `null`
+ *  when the extra is not offered on that size. */
+export function extraPriceFor(
+  prices: MenuExtraPrice[],
+  variantLabel: string,
+): number | null {
+  const key = sizeKey(variantLabel);
+  return prices.find((p) => sizeKey(p.size) === key)?.price ?? null;
+}
 
 export interface LoadMenuOptions {
   /** The editor needs the rows the public menu filters out. */
@@ -47,7 +70,7 @@ export async function loadMenu(
   options: LoadMenuOptions = {},
 ): Promise<AdminMenu> {
   const itemQuery = db.select().from(menuItems);
-  const [categoryRows, itemRows, legendRows] = await Promise.all([
+  const [categoryRows, itemRows, legendRows, extraRows, extraPriceRows] = await Promise.all([
     db.select().from(menuCategories).orderBy(asc(menuCategories.sortOrder)),
     // Both branches order identically. `sortOrder` alone is not a total order —
     // two items may share one — and without the `id` tiebreaker Postgres is
@@ -60,6 +83,8 @@ export async function loadMenu(
           .where(eq(menuItems.available, true))
           .orderBy(asc(menuItems.sortOrder), asc(menuItems.id)),
     db.select().from(allergenLegend).orderBy(asc(allergenLegend.sortOrder)),
+    db.select().from(menuExtras).orderBy(asc(menuExtras.sortOrder), asc(menuExtras.id)),
+    db.select().from(menuExtraPrices),
   ]);
 
   const itemIds = itemRows.map((r) => r.id);
@@ -88,6 +113,7 @@ export async function loadMenu(
     label: c.label,
     ...(c.labelEn ? { labelEn: c.labelEn } : {}),
     sortOrder: c.sortOrder,
+    ...(c.offersExtras ? { offersExtras: true } : {}),
   }));
 
   const items: AdminMenuItem[] = itemRows.map((r) => ({
@@ -106,11 +132,70 @@ export async function loadMenu(
     sortOrder: r.sortOrder,
   }));
 
+  // Filtered like the items, so the diner's legend never carries a code that
+  // only an unavailable extra prints.
+  const extras = buildExtras(
+    options.includeUnavailable ? extraRows : extraRows.filter((e) => e.available),
+    extraPriceRows,
+    variantRows,
+  );
+
   return {
     categories,
     items,
-    allergenLegend: buildLegend(legendRows, items),
+    // Extras print allergen codes too, so an unresolved one on an extra gets
+    // its "unbekannt" entry exactly like one on a dish.
+    allergenLegend: buildLegend(legendRows, [...items, ...extras]),
+    extras,
   };
+}
+
+/**
+ * Extras with their prices, each price list smallest size first (klein, groß,
+ * Blech) so the editor and the diner read the columns the same way round.
+ *
+ * "Smallest" is the lowest price the menu charges for a dish in that size.
+ * A variant's `sortOrder` cannot answer it: it is a position within ONE dish,
+ * and a Calzone sold only "groß 28cm" puts groß at position 0, tied with every
+ * pizza's klein.
+ */
+function buildExtras(
+  extraRows: {
+    id: string;
+    name: string;
+    nameEn: string | null;
+    allergenCodes: string[];
+    available: boolean;
+    sortOrder: number;
+  }[],
+  priceRows: { extraId: string; sizeLabel: string; priceCents: number }[],
+  variantRows: { label: string; priceCents: number }[],
+): AdminMenuExtra[] {
+  const sizeRank = new Map<string, number>();
+  for (const v of variantRows) {
+    const key = sizeKey(v.label);
+    sizeRank.set(key, Math.min(sizeRank.get(key) ?? v.priceCents, v.priceCents));
+  }
+  const rank = (size: string) => sizeRank.get(sizeKey(size)) ?? Number.MAX_SAFE_INTEGER;
+
+  const pricesByExtra = new Map<string, MenuExtraPrice[]>();
+  for (const p of priceRows) {
+    const list = pricesByExtra.get(p.extraId) ?? [];
+    list.push({ size: p.sizeLabel, price: p.priceCents });
+    pricesByExtra.set(p.extraId, list);
+  }
+
+  return extraRows.map((e) => ({
+    id: e.id,
+    name: e.name,
+    ...(e.nameEn ? { nameEn: e.nameEn } : {}),
+    allergenCodes: e.allergenCodes,
+    prices: (pricesByExtra.get(e.id) ?? []).sort(
+      (a, b) => rank(a.size) - rank(b.size) || a.size.localeCompare(b.size, 'de'),
+    ),
+    available: e.available,
+    sortOrder: e.sortOrder,
+  }));
 }
 
 /** The public payload: the same menu with the owner-only fields removed. */
@@ -122,6 +207,9 @@ export function toPublicMenu(menu: AdminMenu): Menu {
       return rest;
     }),
     allergenLegend: menu.allergenLegend,
+    extras: menu.extras
+      .filter((extra) => extra.available)
+      .map(({ available: _available, sortOrder: _sortOrder, ...rest }) => rest),
   };
 }
 

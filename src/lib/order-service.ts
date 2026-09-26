@@ -8,7 +8,11 @@ import { loadShopRules } from './shop-rules.js';
 import { secretsMatch } from './secrets.js';
 import { refusalFor, shopStatus } from './shop.js';
 import { db } from '../db/client.js';
+import { extraPriceFor } from './menu-service.js';
 import {
+  menuCategories,
+  menuExtraPrices,
+  menuExtras,
   menuItemVariants,
   menuItems,
   orderLines,
@@ -54,6 +58,7 @@ export function serializeOrder(row: OrderRow, lines: OrderLineRow[]): Order {
       variantLabel: l.variantLabel,
       unitPrice: l.unitPrice,
       quantity: l.quantity,
+      ...(l.extras.length > 0 ? { extras: l.extras } : {}),
     })),
     subtotal: row.subtotal,
     deliveryFee: row.deliveryFee,
@@ -139,7 +144,13 @@ export async function readOrderForCaller(
 }
 
 export interface CreateOrderInput {
-  items: { menuItemId: string; variantId: string; quantity: number }[];
+  items: {
+    menuItemId: string;
+    variantId: string;
+    quantity: number;
+    /** Extra ingredients on each unit of this line. */
+    extraIds?: string[];
+  }[];
   /** Defaults to delivery, the only kind of order before pickup existed. */
   fulfilment?: Fulfilment;
   customer?: CustomerInfo;
@@ -167,6 +178,10 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     if (!Number.isInteger(it.quantity) || it.quantity < 1) {
       throw badRequest(`Invalid quantity for ${it.menuItemId}.`);
     }
+    const extraIds = it.extraIds ?? [];
+    if (new Set(extraIds).size !== extraIds.length) {
+      throw badRequest('Jede Extra-Zutat kann pro Gericht nur einmal gewählt werden.');
+    }
   }
 
   // Look up real prices from the DB — never trust client-supplied prices. The
@@ -176,15 +191,32 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
   // amount.
   const ids = [...new Set(items.map((i) => i.menuItemId))];
   const variantIds = [...new Set(items.map((i) => i.variantId))];
-  const [menu, variants] = await Promise.all([
+  // Extras are priced the same way: from the rows, per size, never from the
+  // client.
+  const extraIds = [...new Set(items.flatMap((i) => i.extraIds ?? []))];
+  const [menu, variants, extraRows, extraPriceRows, extraCategories] = await Promise.all([
     db.select().from(menuItems).where(inArray(menuItems.id, ids)),
     db
       .select()
       .from(menuItemVariants)
       .where(inArray(menuItemVariants.id, variantIds)),
+    extraIds.length
+      ? db.select().from(menuExtras).where(inArray(menuExtras.id, extraIds))
+      : [],
+    extraIds.length
+      ? db.select().from(menuExtraPrices).where(inArray(menuExtraPrices.extraId, extraIds))
+      : [],
+    extraIds.length
+      ? db
+          .select({ id: menuCategories.id })
+          .from(menuCategories)
+          .where(eq(menuCategories.offersExtras, true))
+      : [],
   ]);
   const byId = new Map(menu.map((m) => [m.id, m]));
   const variantById = new Map(variants.map((v) => [v.id, v]));
+  const extraById = new Map(extraRows.map((e) => [e.id, e]));
+  const extrasOffered = new Set(extraCategories.map((c) => c.id));
 
   const lines = items.map((it) => {
     const m = byId.get(it.menuItemId);
@@ -198,13 +230,40 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
     if (m.pickupOnly && fulfilment !== 'pickup') {
       throw badRequest(`${m.name} gibt es nur für Selbstabholer. Bitte Abholung wählen.`);
     }
+
+    const extras = (it.extraIds ?? []).map((extraId) => {
+      if (!extrasOffered.has(m.categoryId)) {
+        throw badRequest(`Zu ${m.name} können keine Extra-Zutaten bestellt werden.`);
+      }
+      const e = extraById.get(extraId);
+      if (!e || !e.available) {
+        throw badRequest(
+          `Die Extra-Zutat „${e?.name ?? extraId}“ ist gerade nicht verfügbar. ` +
+            'Bitte das Gericht ohne sie in den Warenkorb legen.',
+        );
+      }
+      // No price for this size means "not offered on this size" — refused,
+      // never charged as zero.
+      const price = extraPriceFor(
+        extraPriceRows
+          .filter((p) => p.extraId === e.id)
+          .map((p) => ({ size: p.sizeLabel, price: p.priceCents })),
+        v.label,
+      );
+      if (price === null) {
+        throw badRequest(`„${e.name}“ gibt es nicht zu ${m.name} ${v.label}.`);
+      }
+      return { extraId: e.id, name: e.name, price };
+    });
+
     return {
       menuItemId: m.id,
       variantId: v.id,
       name: m.name,
       variantLabel: v.label,
-      unitPrice: v.priceCents,
+      unitPrice: v.priceCents + extras.reduce((s, e) => s + e.price, 0),
       quantity: it.quantity,
+      extras,
     };
   });
 

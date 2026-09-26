@@ -127,6 +127,8 @@ export interface PersonalDataExtract {
       variantLabel: string;
       unitPrice: number;
       quantity: number;
+      /** Names of the extra ingredients on each unit; empty for a plain dish. */
+      extras: string[];
     }[];
   };
   payment: {
@@ -206,6 +208,7 @@ export async function personalDataExtract(
         variantLabel: l.variantLabel,
         unitPrice: l.unitPrice,
         quantity: l.quantity,
+        extras: l.extras.map((e) => e.name),
       })),
     },
     payment: {

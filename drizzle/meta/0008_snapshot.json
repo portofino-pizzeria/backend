@@ -1,6 +1,6 @@
 {
-  "id": "b693cf2a-cfc4-43b6-acf4-8b9da0b421c8",
-  "prevId": "ff38ab59-3151-4b86-b412-b0539d216b32",
+  "id": "b3d37cd7-9e58-453b-b0b0-11ac0c345e63",
+  "prevId": "b693cf2a-cfc4-43b6-acf4-8b9da0b421c8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -133,6 +133,123 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "offers_extras": {
+          "name": "offers_extras",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.menu_extra_prices": {
+      "name": "menu_extra_prices",
+      "schema": "",
+      "columns": {
+        "extra_id": {
+          "name": "extra_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "size_label": {
+          "name": "size_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "price_cents": {
+          "name": "price_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "menu_extra_prices_extra_id_menu_extras_id_fk": {
+          "name": "menu_extra_prices_extra_id_menu_extras_id_fk",
+          "tableFrom": "menu_extra_prices",
+          "tableTo": "menu_extras",
+          "columnsFrom": [
+            "extra_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "menu_extra_prices_extra_id_size_label_pk": {
+          "name": "menu_extra_prices_extra_id_size_label_pk",
+          "columns": [
+            "extra_id",
+            "size_label"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "menu_extra_prices_positive": {
+          "name": "menu_extra_prices_positive",
+          "value": "\"menu_extra_prices\".\"price_cents\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.menu_extras": {
+      "name": "menu_extras",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name_en": {
+          "name": "name_en",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "allergen_codes": {
+          "name": "allergen_codes",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "available": {
+          "name": "available",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         },
         "sort_order": {
           "name": "sort_order",
@@ -400,6 +517,13 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true
+        },
+        "extras": {
+          "name": "extras",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         }
       },
       "indexes": {},

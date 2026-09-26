@@ -187,6 +187,7 @@ describe('GET /api/admin/menu — the editor reads what the diner cannot', () =>
     expect(Object.keys(menu).sort()).toEqual([
       'allergenLegend',
       'categories',
+      'extras',
       'items',
     ]);
     expect(menu.items[0]).toMatchObject({

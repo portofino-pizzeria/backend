@@ -57,6 +57,7 @@ export interface SeedCategoryInput {
   label?: string;
   labelEn?: string | null;
   sortOrder?: number;
+  offersExtras?: boolean;
 }
 
 /** Upsert a menu category. Re-seeding the same id updates it. */
@@ -69,6 +70,7 @@ export async function seedCategory(
     label: input.label ?? 'Pizza',
     labelEn: input.labelEn ?? null,
     sortOrder: input.sortOrder ?? 0,
+    offersExtras: input.offersExtras ?? false,
   };
   const rows = await db
     .insert(menuCategories)
@@ -79,6 +81,7 @@ export async function seedCategory(
         label: values.label,
         labelEn: values.labelEn,
         sortOrder: values.sortOrder,
+        offersExtras: values.offersExtras,
       },
     })
     .returning();

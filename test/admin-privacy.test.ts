@@ -231,7 +231,7 @@ describe('GET /api/admin/orders/:id/personal-data', () => {
     });
     expect(extract.order.total).toBe(1089);
     expect(extract.order.lines).toEqual([
-      { name: 'Margherita', variantLabel: 'groß', unitPrice: 790, quantity: 1 },
+      { name: 'Margherita', variantLabel: 'groß', unitPrice: 790, quantity: 1, extras: [] },
     ]);
     expect(extract.payment.provider).toBe('stripe');
     expect(extract.payment.reference).toBe('cs_test_reference');

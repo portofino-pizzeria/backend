@@ -13,6 +13,28 @@ export interface MenuCategory {
   label: string;
   labelEn?: string;
   sortOrder: number;
+  /** Diners may add `Menu.extras` to the dishes in this category. Absent =
+   *  false. */
+  offersExtras?: boolean;
+}
+
+/** An extra ingredient's price on one size. `size` is a variant label
+ *  ("groß 28cm"), matched case-insensitively against the dish's variants. */
+export interface MenuExtraPrice {
+  size: string;
+  price: number;
+}
+
+/** An extra ingredient a diner can add ("extra Käse"). Offered on a dish only
+ *  when the dish's category `offersExtras` AND the extra has a price for the
+ *  variant being bought — a size with no price is not offered, never free. */
+export interface MenuExtra {
+  id: string;
+  name: string;
+  nameEn?: string;
+  /** Same contract as `MenuItem.allergenCodes`. */
+  allergenCodes: string[];
+  prices: MenuExtraPrice[];
 }
 
 /** One real purchasable thing: a size ("klein"/"groß"/"Blech") or a meat
@@ -61,6 +83,8 @@ export interface Menu {
   categories: MenuCategory[];
   items: MenuItem[];
   allergenLegend: AllergenLegendEntry[];
+  /** Available extras only, in render order. */
+  extras: MenuExtra[];
 }
 
 /** An item as the owner's editor sees it: everything a diner sees, plus the
@@ -78,6 +102,13 @@ export interface AdminMenu {
   categories: MenuCategory[];
   items: AdminMenuItem[];
   allergenLegend: AllergenLegendEntry[];
+  extras: AdminMenuExtra[];
+}
+
+/** An extra as the editor sees it, including unavailable ones. */
+export interface AdminMenuExtra extends MenuExtra {
+  available: boolean;
+  sortOrder: number;
 }
 
 export type PaymentProvider = 'stripe' | 'paypal' | 'mock';
@@ -99,8 +130,19 @@ export interface OrderLine {
   variantId: string;
   name: string;
   variantLabel: string;
+  /** One unit, extras included: `unitPrice * quantity` is the line total. */
   unitPrice: number;
   quantity: number;
+  /** The extras added to each unit, snapshotted with their price. Absent on a
+   *  line without extras. */
+  extras?: OrderLineExtra[];
+}
+
+export interface OrderLineExtra {
+  extraId: string;
+  name: string;
+  /** Cents, per unit — already included in `OrderLine.unitPrice`. */
+  price: number;
 }
 
 export interface CustomerInfo {

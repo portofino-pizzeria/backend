@@ -66,6 +66,14 @@ const createOrderSchema = z.object({
           })
           .min(1, 'Each item needs a variantId.'),
         quantity: z.number().int().min(1).max(50),
+        // Extra ingredients on each unit. Priced by the server from the
+        // variant's size; the client never sends a price.
+        extraIds: z
+          .array(z.string().min(1).max(120), {
+            invalid_type_error: 'Die Extra-Zutaten müssen eine Liste sein.',
+          })
+          .max(20, 'Höchstens 20 Extra-Zutaten pro Gericht.')
+          .optional(),
       }),
     )
     .min(1),

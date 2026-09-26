@@ -107,6 +107,9 @@ function presentationOrder(items: MenuDataset['items']): Map<string, number> {
 /** The transaction handle drizzle passes to a `db.transaction` callback. */
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+/** The category that offers extra ingredients when the menu is first loaded. */
+const PIZZA_CATEGORY_ID = 'pizza';
+
 /** The `dataset_seeds` row that records the menu bootstrap. */
 const MENU_DATASET = 'menu';
 
@@ -219,6 +222,10 @@ async function insertDataset(tx: Tx, dataset: MenuDataset): Promise<void> {
         label: category.labelDe, // JSON key is labelDe; column is label.
         labelEn: category.labelEn,
         sortOrder: category.sortOrder,
+        // Pizza takes extra ingredients from day one; the owner can switch any
+        // other category on in the editor. Same default migration 0008 applies
+        // to a database that already held the menu.
+        offersExtras: category.id === PIZZA_CATEGORY_ID,
       })),
     );
   }
