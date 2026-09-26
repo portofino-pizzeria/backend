@@ -250,6 +250,45 @@ describe('the owner prices an extra per size', () => {
     expect(menu.categories.find((c) => c.id === 'salate')?.offersExtras).toBe(true);
   });
 
+  it('refuses a price above 1.000 €', async () => {
+    await seedPizzeria();
+    const res = await admin('POST', '/api/admin/menu/extras', {
+      name: 'Gold',
+      confirmNoAllergens: true,
+      prices: [{ size: GROSS, priceCents: 100_001 }],
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('names the extras that still print an allergen whose label is deleted', async () => {
+    await seedPizzeria();
+    await createKaese();
+    const res = await admin('DELETE', '/api/admin/menu/allergens/g');
+    expect(res.statusCode, res.error).toBe(200);
+    expect(res.body.stillUsedByExtras).toEqual(['kaese']);
+    // The code stays on the extra and renders as unresolved, never dropped.
+    const menu = await publicMenu();
+    expect(menu.extras[0]?.allergenCodes).toEqual(['g']);
+    expect(menu.allergenLegend.find((e) => e.code === 'g')?.resolved).toBe(false);
+  });
+
+  it('refuses to keep an extra available when its only price is for a size no dish carries', async () => {
+    await seedPizzeria();
+    await createKaese({ prices: [{ size: BLECH, priceCents: 300 }] });
+    // The Blech size disappears from the menu: its only dish is renamed.
+    await admin('PATCH', '/api/admin/menu/items/margherita', {
+      variants: [
+        { id: 'margherita-klein', label: KLEIN, priceCents: 490 },
+        { id: 'margherita-gross', label: GROSS, priceCents: 790 },
+      ],
+    });
+    const res = await admin('PATCH', '/api/admin/menu/extras/kaese', { name: 'Mozzarella' });
+    expect(res.statusCode).toBe(400);
+    expect(res.error).toContain('für keine Größe einen Preis');
+    const hidden = await admin('PATCH', '/api/admin/menu/extras/kaese', { available: false });
+    expect(hidden.statusCode, hidden.error).toBe(200);
+  });
+
   it('refuses every extras write without the owner credential', async () => {
     const res = await app.inject({
       method: 'POST',

@@ -21,6 +21,7 @@ import {
   deleteExtra,
   deleteMenuItem,
   loadAdminMenu,
+  MAX_PRICE_CENTS,
   reorderCategories,
   setMenuItemAvailability,
   updateCategory,
@@ -37,7 +38,8 @@ const priceCents = z
     invalid_type_error: 'Der Preis muss eine Zahl in Cent sein (z. B. 790 für 7,90 €).',
   })
   .int('Der Preis muss eine ganze Zahl in Cent sein (z. B. 790 für 7,90 €).')
-  .positive('Der Preis muss größer als 0 sein.');
+  .positive('Der Preis muss größer als 0 sein.')
+  .max(MAX_PRICE_CENTS, 'Der Preis darf höchstens 1.000,00 € betragen.');
 
 const variantSchema = z.object({
   id: z.string().max(120).optional(),
@@ -302,12 +304,16 @@ export async function adminMenuRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // DELETE /api/admin/menu/allergens/:code -> { deleted, stillUsedBy }
+  // DELETE /api/admin/menu/allergens/:code -> { deleted, stillUsedBy, stillUsedByExtras }
   app.delete<{ Params: { code: string } }>(
     '/api/admin/menu/allergens/:code',
     async (req) => {
       const result = await deleteAllergen(req.params.code);
-      return { deleted: result.code, stillUsedBy: result.stillUsedBy };
+      return {
+        deleted: result.code,
+        stillUsedBy: result.stillUsedBy,
+        stillUsedByExtras: result.stillUsedByExtras,
+      };
     },
   );
 }

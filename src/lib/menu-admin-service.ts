@@ -593,12 +593,13 @@ export async function updateExtra(
         );
       }
 
+      // Only a price for a size some dish still carries makes the extra
+      // orderable: a price kept for a renamed size is offered on nothing.
       const available = input.available ?? existing.available;
-      assertExtraOrderable(
-        available,
-        prices ? prices.length : existingPrices.length,
-        name ?? existing.name,
-      );
+      const carried = new Set((await variantSizeLabels(tx)).map(sizeKey));
+      const orderablePrices = (prices ?? existingPrices.map((p) => ({ size: p.sizeLabel })))
+        .filter((p) => carried.has(sizeKey(p.size))).length;
+      assertExtraOrderable(available, orderablePrices, name ?? existing.name);
 
       const patch = {
         ...(name !== undefined ? { name } : {}),
@@ -691,6 +692,8 @@ export interface DeleteAllergenResult {
   /** Items that still print this code. They keep it — it simply renders as
    *  "unbekannt" again, which is honest rather than silently dropped. */
   stillUsedBy: string[];
+  /** Extra ingredients that still print this code — same rule as dishes. */
+  stillUsedByExtras: string[];
 }
 
 export async function deleteAllergen(
@@ -711,13 +714,20 @@ export async function deleteAllergen(
         .filter((i) => i.allergenCodes.includes(code))
         .map((i) => i.id)
         .sort();
+      const extras = await tx
+        .select({ id: menuExtras.id, allergenCodes: menuExtras.allergenCodes })
+        .from(menuExtras);
+      const stillUsedByExtras = extras
+        .filter((e) => e.allergenCodes.includes(code))
+        .map((e) => e.id)
+        .sort();
 
       // The codes on those items are NOT rewritten. Removing a legend entry
       // removes a label, never an allergen: the code stays on the dish and the
       // menu renders it as "unbekannt".
       await tx.delete(allergenLegend).where(eq(allergenLegend.code, code));
 
-      return { code, stillUsedBy };
+      return { code, stillUsedBy, stillUsedByExtras };
     }),
   );
 }
@@ -834,6 +844,10 @@ function normaliseVariants(
   return out;
 }
 
+/** 1.000 € — far above anything on the menu, and far below what twenty extras
+ *  on one line would need to overflow the 32-bit `order_lines.unit_price`. */
+export const MAX_PRICE_CENTS = 100_000;
+
 /**
  * Turn the submitted per-size prices into rows (property 2): no price without
  * a size, no size twice, no zero, negative or fractional price.
@@ -850,7 +864,12 @@ function normaliseExtraPrices(inputs: ExtraPriceInput[]): ExtraPriceInput[] {
       );
     }
     const cents = input.priceCents;
-    if (typeof cents !== 'number' || !Number.isInteger(cents) || cents <= 0) {
+    if (
+      typeof cents !== 'number' ||
+      !Number.isInteger(cents) ||
+      cents <= 0 ||
+      cents > MAX_PRICE_CENTS
+    ) {
       throw badRequest(
         `Der Preis für „${size}“ muss eine ganze Zahl in Cent größer als 0 sein ` +
           '(z. B. 150 für 1,50 €).',
@@ -879,10 +898,8 @@ async function assertSizesAreKnown(
   alreadyStored: string[],
 ): Promise<void> {
   if (prices.length === 0) return;
-  const rows = await tx
-    .selectDistinct({ label: menuItemVariants.label })
-    .from(menuItemVariants);
-  const known = new Set([...rows.map((r) => sizeKey(r.label)), ...alreadyStored.map(sizeKey)]);
+  const labels = await variantSizeLabels(tx);
+  const known = new Set([...labels.map(sizeKey), ...alreadyStored.map(sizeKey)]);
   const unknown = prices.find((p) => !known.has(sizeKey(p.size)));
   if (unknown) {
     throw badRequest(
@@ -890,6 +907,14 @@ async function assertSizesAreKnown(
         'wählen, wie sie bei den Gerichten steht (z. B. „groß 28cm“).',
     );
   }
+}
+
+/** Every size label some dish on the menu carries. */
+async function variantSizeLabels(tx: Tx): Promise<string[]> {
+  const rows = await tx
+    .selectDistinct({ label: menuItemVariants.label })
+    .from(menuItemVariants);
+  return rows.map((r) => r.label);
 }
 
 /** An extra a diner can see must be an extra a diner can buy on some size. */
