@@ -17,7 +17,7 @@ import Fastify, {
   type FastifyRequest,
 } from 'fastify';
 
-import { config, kitchenAuthMode, stripeEnabled } from './config.js';
+import { config, kitchenAuthMode, paymentsMode, stripeEnabled } from './config.js';
 import { HttpError } from './lib/http-errors.js';
 import { readLegalStatus } from './lib/legal-status.js';
 import { adminMenuRoutes } from './routes/admin-menu.js';
@@ -132,12 +132,15 @@ export async function buildApp(
   // health check and answers before the database is reachable (see
   // lib/legal-status.ts). `legalMissing` names the gaps while there are any,
   // so the deploy can warn with something actionable in it.
+  // `payments` (`paymentsMode`) is the same idea for money: `stripe-no-webhook`
+  // means paid orders can stay stuck in `pending_payment`, and the deploy warns.
   app.get('/api/health', async () => {
     const legal = readLegalStatus();
     return {
       status: 'ok',
       commit: config.commit,
       stripe: stripeEnabled() ? 'live-keys' : 'mock',
+      payments: paymentsMode(),
       kitchen: kitchenAuthMode(),
       legal: legal.legal,
       ...(legal.legal === 'incomplete' ? { legalMissing: legal.missing } : {}),

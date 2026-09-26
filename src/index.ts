@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import { buildApp } from './app.js';
-import { config, kitchenAuthMode } from './config.js';
+import { config, kitchenAuthMode, paymentsMode } from './config.js';
 import { runMigrations } from './db/migrate.js';
 import { seedMenu } from './db/seed.js';
 import { seedShop } from './db/seed-shop.js';
@@ -15,6 +15,7 @@ async function main() {
   // doesn't touch the DB) passes even while the database is still coming up.
   await app.listen({ port: config.port, host: '0.0.0.0' });
   logKitchenAuthMode(app);
+  logPaymentsMode(app);
 
   // The same build marker /api/health serves, in the service log: App Runner
   // keeps logs per revision, so a log that names its commit is the fastest
@@ -59,6 +60,29 @@ function logKitchenAuthMode(app: FastifyInstance): void {
         'KITCHEN_TOKEN is not set: every /api/kitchen/* request is refused. Set it ' +
           '(or, in local dev only, KITCHEN_AUTH_DISABLED=1) to serve the kitchen dashboard.',
       );
+      return;
+  }
+}
+
+/**
+ * Say, once, at boot, how payments get confirmed. `stripe-no-webhook` is the
+ * one worth a warning: money is taken, but only the success redirect can mark
+ * the order paid, so an abandoned redirect or a SEPA payment never reaches the
+ * kitchen. `mock` is the intended local-dev shape and says so quietly.
+ */
+function logPaymentsMode(app: FastifyInstance): void {
+  switch (paymentsMode()) {
+    case 'stripe':
+      return;
+    case 'stripe-no-webhook':
+      app.log.warn(
+        'STRIPE_SECRET_KEY is set but STRIPE_WEBHOOK_SECRET is not: only the success ' +
+          'redirect can confirm a payment, so a diner who closes the browser first, and ' +
+          'every SEPA payment, leaves a paid order stuck in pending_payment.',
+      );
+      return;
+    case 'mock':
+      app.log.info('No STRIPE_SECRET_KEY: checkout runs on the mock (no money is taken).');
       return;
   }
 }

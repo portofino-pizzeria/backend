@@ -879,6 +879,57 @@ jobs:
             echo "| Impressum | \`legal: ${legal:-<not reported by this build>}\` |"
           }
 
+          # How payments get confirmed, from the SAME body. `payments`
+          # (src/config.ts `paymentsMode`) is `stripe` with both Stripe secrets,
+          # `mock` with none, and `stripe-no-webhook` with a key but no webhook
+          # secret — money is taken, but only the success redirect can mark an
+          # order paid, so an abandoned redirect or any SEPA payment leaves a
+          # paid order the kitchen never sees. WARNS only, like the Impressum:
+          # the secrets are the operator's to supply (infra variables), and
+          # `mock` is the intended pre-launch state. Sets `payments` for the
+          # summary.
+          payments=""
+          report_payments() {
+            [ -n "${health_body}" ] || return 0
+
+            if [ "$(printf '%s' "${health_body}" | jq -r 'has("payments")')" != "true" ]; then
+              # As for `kitchen`: absent is a rollback only if the source at
+              # TARGET_SHA does not serve the field either.
+              if grep -rq 'paymentsMode()' src/; then
+                echo "::warning::${health_url} reports no 'payments' field, but the source at ${TARGET_SHA} serves"
+                echo "::warning::one — the build serving traffic is not the build this source describes."
+              else
+                echo "::notice::${health_url} reports no 'payments' field — this build predates the report."
+              fi
+              return 0
+            fi
+
+            payments="$(printf '%s' "${health_body}" | jq -r '.payments')"
+            case "${payments}" in
+              stripe)
+                echo "Verified: Stripe is configured with its webhook (payments: stripe)."
+                ;;
+              mock)
+                echo "::notice::${health_url} reports payments: mock — no STRIPE_SECRET_KEY, so checkout takes no money."
+                ;;
+              stripe-no-webhook)
+                echo "::warning::${health_url} reports payments: stripe-no-webhook — STRIPE_SECRET_KEY is set but"
+                echo "::warning::STRIPE_WEBHOOK_SECRET is not. Only the success redirect can confirm a payment, so a"
+                echo "::warning::diner who closes the browser first, and every SEPA payment, leaves a PAID order stuck"
+                echo "::warning::in pending_payment. Set stripe_webhook_secret (infra) and redeploy. Stripe retries missed"
+                echo "::warning::events (~3 days) ONLY to an endpoint already registered with it; otherwise reconcile the"
+                echo "::warning::orders paid meanwhile by hand in the Stripe dashboard. The deploy is NOT failed by this."
+                ;;
+              *)
+                echo "::warning::${health_url} reports payments: '${payments}', a value this workflow does not know."
+                ;;
+            esac
+          }
+
+          payments_summary_row() {
+            echo "| Payments | \`payments: ${payments:-<not reported by this build>}\` |"
+          }
+
           # Returns the deployment operations that were not in the pre-push
           # snapshot, or exits non-zero if AWS could not be asked.
           #
@@ -907,6 +958,7 @@ jobs:
           no_op_summary() {
             assert_kitchen_guard
             report_legal_notice
+            report_payments
             echo "No deployment was triggered: ${TARGET_SHA} is already live (identical image digest)."
             {
               echo "### Backend deploy — no-op"
@@ -918,6 +970,7 @@ jobs:
               echo "|---|---|"
               kitchen_summary_row
               legal_summary_row
+              payments_summary_row
             } >> "$GITHUB_STEP_SUMMARY"
           }
 
@@ -1046,6 +1099,7 @@ jobs:
 
           # --- 5. The legal notice, reported but never fatal -------------------
           report_legal_notice
+          report_payments
 
           {
             echo "### Backend deploy — verified"
@@ -1058,6 +1112,7 @@ jobs:
             echo "| Health | [\`${health_url}\`](${health_url}) reports \`commit: ${TARGET_SHA}\` |"
             kitchen_summary_row
             legal_summary_row
+            payments_summary_row
             echo "| Rollback | re-run this workflow with \`sha\` set to a known-good commit |"
           } >> "$GITHUB_STEP_SUMMARY"
 

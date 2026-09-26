@@ -47,7 +47,7 @@ Every shop write carries the `version` it was read at and is refused with
 and records a whole-shop snapshot in `admin_changes`, which is what `undo`
 restores.
 
-Internal: `GET /api/health` (`commit`, `stripe`, `kitchen`, and `legal` /
+Internal: `GET /api/health` (`commit`, `stripe`, `payments`, `kitchen`, and `legal` /
 `legalMissing` — whether the Impressum is complete, served from an in-process
 cache so the health check never queries the database), hosted checkout pages
 under `/checkout/*`, and `POST /webhooks/stripe`.
@@ -71,6 +71,17 @@ checked against Stripe rather than trusted:
   **`checkout.session.async_payment_succeeded`**. `completed` alone is not
   payment for a delayed method (SEPA debit) — its `payment_status` is then
   `unpaid` and the order waits for `async_payment_succeeded`.
+
+Set **both** secrets. With a key but no webhook secret only the return URL can
+confirm, so a diner who closes the browser before the redirect — and every SEPA
+payment — leaves a paid order in `pending_payment` that the kitchen never sees.
+`/api/health` reports this as `payments: "stripe-no-webhook"` (`"stripe"` with
+both, `"mock"` with neither), the deploy warns on it, and the webhook answers
+`503`. If an endpoint is already registered in Stripe, Stripe retries a failed
+event for up to ~3 days, so setting the secret in that window still confirms
+those orders. Otherwise — no endpoint yet, or a new one created to get the
+`whsec_` — nothing is redelivered: reconcile orders paid in the meantime by hand
+(Stripe dashboard → Payments).
 
 Local end-to-end with test keys and the [Stripe CLI](https://docs.stripe.com/stripe-cli):
 

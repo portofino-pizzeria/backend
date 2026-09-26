@@ -232,6 +232,38 @@ describe('POST /webhooks/stripe', () => {
     expect(await orderStatus(order.id)).toBe('pending_payment');
   });
 
+  it('answers 503 while the webhook secret is missing, and accepts the same event once it is set', async () => {
+    const order = await placeOrder();
+    const payload = sessionEvent('checkout.session.completed', order);
+    const res = await withConfig(
+      { stripe: { secretKey: LIVE.stripe.secretKey, webhookSecret: '' } },
+      () => deliver(payload),
+    );
+    expect(res.statusCode).toBe(503);
+    expect(await orderStatus(order.id)).toBe('pending_payment');
+
+    // Once wired, the SAME redelivered event confirms the order.
+    expect((await live(() => deliver(payload))).statusCode).toBe(200);
+    expect(await orderStatus(order.id)).toBe('paid');
+  });
+
+  it('answers 503 before looking at the signature, which cannot be checked', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/stripe',
+      headers: { 'content-type': 'application/json' },
+      payload: '{}',
+    });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it('answers 503 with no Stripe key at all', async () => {
+    const order = await placeOrder();
+    const res = await deliver(sessionEvent('checkout.session.completed', order));
+    expect(res.statusCode).toBe(503);
+    expect(await orderStatus(order.id)).toBe('pending_payment');
+  });
+
   it('acknowledges an event for an order it never issued', async () => {
     const order = await placeOrder();
     const res = await live(() =>
