@@ -593,13 +593,16 @@ export async function updateExtra(
         );
       }
 
-      // Only a price for a size some dish still carries makes the extra
-      // orderable: a price kept for a renamed size is offered on nothing.
+      // Counts stored prices, not only prices for sizes a dish carries today:
+      // renaming a dish's size must not lock the owner out of editing an
+      // extra. An extra with no live size is hidden from diners instead (see
+      // `toPublicMenu`).
       const available = input.available ?? existing.available;
-      const carried = new Set((await variantSizeLabels(tx)).map(sizeKey));
-      const orderablePrices = (prices ?? existingPrices.map((p) => ({ size: p.sizeLabel })))
-        .filter((p) => carried.has(sizeKey(p.size))).length;
-      assertExtraOrderable(available, orderablePrices, name ?? existing.name);
+      assertExtraOrderable(
+        available,
+        prices ? prices.length : existingPrices.length,
+        name ?? existing.name,
+      );
 
       const patch = {
         ...(name !== undefined ? { name } : {}),
@@ -844,9 +847,10 @@ function normaliseVariants(
   return out;
 }
 
-/** 1.000 € — far above anything on the menu, and far below what twenty extras
- *  on one line would need to overflow the 32-bit `order_lines.unit_price`. */
-export const MAX_PRICE_CENTS = 100_000;
+/** 1.000 € per extra — far above any real topping, and far below what twenty
+ *  extras on one line would need to overflow the 32-bit
+ *  `order_lines.unit_price`. Dish prices are deliberately not capped here. */
+export const MAX_EXTRA_PRICE_CENTS = 100_000;
 
 /**
  * Turn the submitted per-size prices into rows (property 2): no price without
@@ -867,13 +871,15 @@ function normaliseExtraPrices(inputs: ExtraPriceInput[]): ExtraPriceInput[] {
     if (
       typeof cents !== 'number' ||
       !Number.isInteger(cents) ||
-      cents <= 0 ||
-      cents > MAX_PRICE_CENTS
+      cents <= 0
     ) {
       throw badRequest(
         `Der Preis für „${size}“ muss eine ganze Zahl in Cent größer als 0 sein ` +
           '(z. B. 150 für 1,50 €).',
       );
+    }
+    if (cents > MAX_EXTRA_PRICE_CENTS) {
+      throw badRequest(`Der Aufpreis für „${size}“ darf höchstens 1.000,00 € betragen.`);
     }
     const key = sizeKey(size);
     if (seen.has(key)) {

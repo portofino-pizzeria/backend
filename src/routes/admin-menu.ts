@@ -21,7 +21,7 @@ import {
   deleteExtra,
   deleteMenuItem,
   loadAdminMenu,
-  MAX_PRICE_CENTS,
+  MAX_EXTRA_PRICE_CENTS,
   reorderCategories,
   setMenuItemAvailability,
   updateCategory,
@@ -38,8 +38,7 @@ const priceCents = z
     invalid_type_error: 'Der Preis muss eine Zahl in Cent sein (z. B. 790 für 7,90 €).',
   })
   .int('Der Preis muss eine ganze Zahl in Cent sein (z. B. 790 für 7,90 €).')
-  .positive('Der Preis muss größer als 0 sein.')
-  .max(MAX_PRICE_CENTS, 'Der Preis darf höchstens 1.000,00 € betragen.');
+  .positive('Der Preis muss größer als 0 sein.');
 
 const variantSchema = z.object({
   id: z.string().max(120).optional(),
@@ -110,7 +109,10 @@ const updateCategorySchema = z.object({
 
 const extraPriceSchema = z.object({
   size: z.string({ required_error: 'Jeder Preis braucht eine Größe.' }).max(120),
-  priceCents,
+  priceCents: priceCents.max(
+    MAX_EXTRA_PRICE_CENTS,
+    'Der Aufpreis darf höchstens 1.000,00 € betragen.',
+  ),
 });
 
 const createExtraSchema = z.object({

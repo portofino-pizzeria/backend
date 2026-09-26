@@ -200,6 +200,9 @@ function buildExtras(
 
 /** The public payload: the same menu with the owner-only fields removed. */
 export function toPublicMenu(menu: AdminMenu): Menu {
+  const liveSizes = new Set(
+    menu.items.flatMap((item) => item.variants.map((v) => sizeKey(v.label))),
+  );
   return {
     categories: menu.categories,
     items: menu.items.map((item) => {
@@ -207,8 +210,10 @@ export function toPublicMenu(menu: AdminMenu): Menu {
       return rest;
     }),
     allergenLegend: menu.allergenLegend,
+    // An extra with no price for any size a dish is sold in (its only size was
+    // renamed away) cannot be bought on anything — so a diner is not shown it.
     extras: menu.extras
-      .filter((extra) => extra.available)
+      .filter((extra) => extra.available && extra.prices.some((p) => liveSizes.has(sizeKey(p.size))))
       .map(({ available: _available, sortOrder: _sortOrder, ...rest }) => rest),
   };
 }

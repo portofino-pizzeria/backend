@@ -272,21 +272,33 @@ describe('the owner prices an extra per size', () => {
     expect(menu.allergenLegend.find((e) => e.code === 'g')?.resolved).toBe(false);
   });
 
-  it('refuses to keep an extra available when its only price is for a size no dish carries', async () => {
+  it('hides an extra from diners once no dish carries any size it is priced for', async () => {
     await seedPizzeria();
     await createKaese({ prices: [{ size: BLECH, priceCents: 300 }] });
-    // The Blech size disappears from the menu: its only dish is renamed.
+    expect((await publicMenu()).extras.map((e) => e.id)).toEqual(['kaese']);
+
+    // The Blech size disappears from the menu: its only dish drops it.
     await admin('PATCH', '/api/admin/menu/items/margherita', {
       variants: [
         { id: 'margherita-klein', label: KLEIN, priceCents: 490 },
         { id: 'margherita-gross', label: GROSS, priceCents: 790 },
       ],
     });
+    expect((await publicMenu()).extras).toEqual([]);
+
+    // The owner is not locked out of the extra: a plain rename still saves,
+    // and the stored Blech price is kept for the editor to see.
     const res = await admin('PATCH', '/api/admin/menu/extras/kaese', { name: 'Mozzarella' });
-    expect(res.statusCode).toBe(400);
-    expect(res.error).toContain('für keine Größe einen Preis');
-    const hidden = await admin('PATCH', '/api/admin/menu/extras/kaese', { available: false });
-    expect(hidden.statusCode, hidden.error).toBe(200);
+    expect(res.statusCode, res.error).toBe(200);
+    expect((res.body.extra as AdminMenuExtra).prices).toEqual([{ size: BLECH, price: 300 }]);
+  });
+
+  it('does not cap dish prices at the extras cap', async () => {
+    await seedPizzeria();
+    const res = await admin('PATCH', '/api/admin/menu/items/calzone', {
+      variants: [{ id: 'calzone-gross', label: GROSS, priceCents: 150_000 }],
+    });
+    expect(res.statusCode, res.error).toBe(200);
   });
 
   it('refuses every extras write without the owner credential', async () => {
