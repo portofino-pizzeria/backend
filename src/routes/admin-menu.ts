@@ -171,7 +171,7 @@ function parse<S extends z.ZodTypeAny>(schema: S, body: unknown): z.infer<S> {
 export async function adminMenuRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireOwnerAuth);
 
-  // GET /api/admin/menu -> { categories, items, allergenLegend }
+  // GET /api/admin/menu -> { categories, items, allergenLegend, extras }
   //
   // The editor's own read: the public route filters unavailable items out, and
   // an editor that cannot see them could never bring one back.
