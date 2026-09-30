@@ -29,6 +29,8 @@ import {
   allergenLegend,
   datasetSeeds,
   menuCategories,
+  menuExtraPrices,
+  menuExtras,
   menuItemVariants,
   menuItems,
 } from '../src/db/schema.js';
@@ -225,6 +227,29 @@ describe('reseedMenu() — the deliberate reset', () => {
     expect((await menuMarker())!.seededAt.getTime()).toBeGreaterThanOrEqual(
       markerBefore!.seededAt.getTime(),
     );
+  });
+
+  it('erases the owner\'s extras too, which the dataset never carries', async () => {
+    await seedMenu();
+    const pizzaSize = dataset.items.find((i) => i.categoryId === 'pizza')!.variants[0]!.label;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/menu/extras',
+      payload: {
+        name: 'Käse',
+        allergenCodes: [dataset.allergenLegend[0]!.code],
+        prices: [{ size: pizzaSize, priceCents: 150 }],
+      },
+      headers: { authorization: `Bearer ${TEST_OWNER_MENU_TOKEN}` },
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(await db.select().from(menuExtraPrices)).toHaveLength(1);
+
+    await reseedMenu();
+
+    // A reset menu is a freshly seeded one: no extras, and no orphaned prices.
+    expect(await db.select().from(menuExtras)).toEqual([]);
+    expect(await db.select().from(menuExtraPrices)).toEqual([]);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   allergenLegend,
   datasetSeeds,
   menuCategories,
+  menuExtras,
   menuItemVariants,
   menuItems,
 } from './schema.js';
@@ -387,7 +388,9 @@ export async function seedMenu(): Promise<number> {
 }
 
 /**
- * The deliberate full reset: deletes the four menu tables, reloads them from
+ * The deliberate full reset: empties the four dataset tables and the owner's
+ * extras (`menu_extras`, and their prices by cascade — the dataset never
+ * carries any, so they are wholly owner-authored), reloads the four from
  * `data/menu.json` and rewrites the `menu` marker, in one transaction under
  * the same lock as `seedMenu()`. **Every owner edit is erased.** Only the
  * guarded `npm run db:reseed -- --force` command (reseed.ts) calls it; no
@@ -411,6 +414,14 @@ export async function reseedMenu(): Promise<number> {
     // FK-safe delete order: variants depend on items, items depend on
     // categories. `allergen_legend` has no FK relationship to any of these —
     // it's deleted last only for symmetry with the insert order.
+    //
+    // Extras go first. `data/menu.json` defines none, so every row is an owner
+    // edit; leaving them would make a reset menu differ from a freshly seeded
+    // one, and would keep extras whose `allergen_codes` name legend rows, and
+    // prices whose `size_label` names variant sizes, that the reload no longer
+    // has (the editor refuses both states, but this delete bypasses the
+    // editor). Their prices cascade.
+    await tx.delete(menuExtras);
     await tx.delete(menuItemVariants);
     await tx.delete(menuItems);
     await tx.delete(menuCategories);

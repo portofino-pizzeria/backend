@@ -124,8 +124,9 @@ database that has one is left alone, and the boot log says so. After that the
 menu belongs to the owner's editor, and **editing `data/menu.json` changes
 nothing in that database** — see [`data/README.md`](data/README.md) for how a
 correction ships instead. To throw the local menu away and reload the file,
-run `npm run db:reseed -- --force`; it erases every editor change, and with
-`NODE_ENV=production` it also wants `--i-know-this-erases-owner-edits`.
+run `npm run db:reseed -- --force`; it erases every editor change (extras
+included), and with `NODE_ENV=production` it also wants
+`--i-know-this-erases-owner-edits`.
 
 In a **deployed container** the spelling is `npm run db:reseed:dist` — the
 runtime image carries the compiled tree only (`npm prune --omit=dev` removes

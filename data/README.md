@@ -30,8 +30,10 @@ and a boot that finds the menu already seeded logs that and writes nothing.
 
 ## The full reset
 
-`npm run db:reseed -- --force` deletes the four menu tables, reloads them from
-`menu.json` and rewrites the marker. **It erases every owner edit.** It refuses
+`npm run db:reseed -- --force` empties the menu tables, reloads them from
+`menu.json` and rewrites the marker. **It erases every owner edit** — the
+extras (Zutaten) and their per-size prices included: `menu.json` carries none,
+so the reset menu has none. It refuses
 without `--force`, and with `NODE_ENV=production` it also requires
 `--i-know-this-erases-owner-edits`. It is for a local or staging database, not
 a way to ship a correction.

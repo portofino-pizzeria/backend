@@ -1,8 +1,10 @@
 // `npm run db:reseed -- --force` — the deliberate full reset of the menu.
 //
-// Deletes the four menu tables, reloads them from `data/menu.json` and
-// rewrites the `menu` row in `dataset_seeds` (see `reseedMenu()` in seed.ts).
-// Every edit the owner made in the menu editor is erased. That used to happen
+// Empties the menu tables (the four the dataset loads, plus the owner's extras
+// and their prices), reloads them from `data/menu.json` and rewrites the
+// `menu` row in `dataset_seeds` (see `reseedMenu()` in seed.ts). Every edit the
+// owner made in the menu editor is erased, extras included — the dataset
+// carries none, so none survive. That used to happen
 // on every boot; now it happens only when someone types this command with the
 // flags below, so the flags are the whole safety of it:
 //
