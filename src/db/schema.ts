@@ -304,6 +304,14 @@ export const shopProfile = pgTable(
     holidayClose: text('holiday_close').notNull(),
     /** While true, a Ruhetag stays closed on a public holiday (decision D1). */
     ruhetagBeatsHoliday: boolean('ruhetag_beats_holiday').notNull().default(true),
+    /**
+     * The postcodes the shop delivers to (lib/delivery-area.ts). Empty means
+     * no restriction. Written only by `PUT /api/admin/shop/delivery-area`.
+     */
+    deliveryPostcodes: text('delivery_postcodes')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
 
     // The Impressum (§ 5 DDG). All nullable: none of these facts appears in any
     // document this repository can read, and inventing a legal name or a VAT id

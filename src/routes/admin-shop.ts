@@ -17,6 +17,7 @@ import {
   loadAdminShop,
   previewShop,
   saveHours,
+  saveDeliveryArea,
   saveLegal,
   saveProfile,
   undoLastChange,
@@ -64,6 +65,15 @@ const hoursSchema = z.object({
       'Bitte angeben, ob ein Ruhetag auch an Feiertagen gilt (ruhetagBeatsHoliday).',
   }),
   confirmAllClosed: z.boolean().optional(),
+  version,
+});
+
+const deliveryAreaSchema = z.object({
+  postcodes: z
+    .array(z.string().max(20), {
+      required_error: 'Bitte die Postleitzahlen als Liste senden (postcodes).',
+    })
+    .max(500),
   version,
 });
 
@@ -156,6 +166,13 @@ export async function adminShopRoutes(app: FastifyInstance): Promise<void> {
   // PUT /api/admin/shop/hours -> AdminShop
   app.put<{ Body: unknown }>('/api/admin/shop/hours', async (req) =>
     saveHours(parse(hoursSchema, req.body)),
+  );
+
+  // PUT /api/admin/shop/delivery-area -> AdminShop
+  //
+  // The postcodes delivery orders are taken for; [] lifts the restriction.
+  app.put<{ Body: unknown }>('/api/admin/shop/delivery-area', async (req) =>
+    saveDeliveryArea(parse(deliveryAreaSchema, req.body)),
   );
 
   // PUT /api/admin/shop/legal -> AdminShop

@@ -35,6 +35,7 @@ import {
   type ShopWeeklyHoursRow,
 } from '../db/schema.js';
 import { now } from './clock.js';
+import { normalisePostcodes } from './delivery-area.js';
 import { badRequest, conflict, notFound, serviceUnavailable } from './http-errors.js';
 import { noteLegalFacts } from './legal-status.js';
 import { rulesFromRows, type ShopRules, type SpecialDayRule } from './shop-rules.js';
@@ -67,6 +68,8 @@ export interface AdminProfile {
   holidayOpen: string;
   holidayClose: string;
   ruhetagBeatsHoliday: boolean;
+  /** The postcodes delivered to; empty = no restriction. */
+  deliveryPostcodes: string[];
 }
 
 export interface AdminLegal {
@@ -121,6 +124,11 @@ export interface ProfileInput {
   postalCode: string;
   city: string;
   phoneDisplay: string;
+  version: number;
+}
+
+export interface DeliveryAreaInput {
+  postcodes: string[];
   version: number;
 }
 
@@ -395,6 +403,8 @@ interface ShopSnapshot {
     holidayOpen: string;
     holidayClose: string;
     ruhetagBeatsHoliday: boolean;
+    /** Absent from a snapshot taken before the delivery area existed. */
+    deliveryPostcodes?: string[];
     legalOwnerName: string | null;
     legalForm: string | null;
     vatId: string | null;
@@ -457,6 +467,7 @@ function toAdminShop(
       holidayOpen: profile.holidayOpen,
       holidayClose: profile.holidayClose,
       ruhetagBeatsHoliday: profile.ruhetagBeatsHoliday,
+      deliveryPostcodes: profile.deliveryPostcodes,
     },
     legal: {
       legalOwnerName: profile.legalOwnerName,
@@ -657,6 +668,17 @@ export async function saveHours(input: HoursInput): Promise<AdminShop> {
   });
 }
 
+/**
+ * `PUT /api/admin/shop/delivery-area` — the postcodes the shop delivers to.
+ * An empty list lifts the restriction. Undoable like every other shop write.
+ */
+export async function saveDeliveryArea(input: DeliveryAreaInput): Promise<AdminShop> {
+  const deliveryPostcodes = normalisePostcodes(input.postcodes);
+  return writeShop(input.version, async (tx) => {
+    await tx.update(shopProfile).set({ deliveryPostcodes }).where(eq(shopProfile.id, 1));
+  });
+}
+
 /** `PUT /api/admin/shop/legal` — the Impressum, and the only writer of `email`. */
 export async function saveLegal(input: LegalInput): Promise<AdminShop> {
   if (input.confirmed !== true) {
@@ -849,6 +871,9 @@ async function restore(tx: Tx, target: ShopSnapshot): Promise<void> {
       holidayOpen: target.profile.holidayOpen,
       holidayClose: target.profile.holidayClose,
       ruhetagBeatsHoliday: target.profile.ruhetagBeatsHoliday,
+      // A snapshot from before the area existed restores "no restriction",
+      // which is what was true when it was taken.
+      deliveryPostcodes: target.profile.deliveryPostcodes ?? [],
       legalOwnerName: target.profile.legalOwnerName,
       legalForm: target.profile.legalForm,
       vatId: target.profile.vatId,

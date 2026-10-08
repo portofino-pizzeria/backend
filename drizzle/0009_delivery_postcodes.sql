@@ -1,0 +1,1 @@
+ALTER TABLE "shop_profile" ADD COLUMN "delivery_postcodes" text[] DEFAULT '{}'::text[] NOT NULL;

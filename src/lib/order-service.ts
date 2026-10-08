@@ -4,6 +4,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 
 import { config } from '../config.js';
 import { now } from './clock.js';
+import { deliveryAreaRefusal } from './delivery-area.js';
 import { loadShopRules } from './shop-rules.js';
 import { secretsMatch } from './secrets.js';
 import { refusalFor, shopStatus } from './shop.js';
@@ -169,6 +170,12 @@ export async function createOrder(input: CreateOrderInput): Promise<CreatedOrder
   const rules = await loadShopRules();
   const refusal = refusalFor(fulfilment, shopStatus(rules, now()));
   if (refusal) throw badRequest(refusal);
+  // Then the delivery area the owner set: a delivery must name one of its
+  // postcodes. An empty area restricts nothing (lib/delivery-area.ts).
+  if (fulfilment === 'delivery') {
+    const outside = deliveryAreaRefusal(rules.deliveryPostcodes, input.customer?.address ?? '');
+    if (outside) throw badRequest(outside);
+  }
 
   for (const it of items) {
     if (!it.menuItemId) throw badRequest('Each item needs a menuItemId.');

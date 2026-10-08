@@ -40,6 +40,8 @@ export async function shopRoutes(app: FastifyInstance): Promise<void> {
       ...rules.shop,
       hours: displayHours(rules),
       deliveryUntil: rules.deliveryUntil,
+      // Empty = no restriction. The order route enforces the same list.
+      deliveryPostcodes: rules.deliveryPostcodes,
       status: shopStatus(rules, now()),
       specialDays: upcomingSpecialDays(rules, now(), SPECIAL_DAYS_AHEAD),
       legal: publicLegal(rules.legal),

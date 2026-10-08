@@ -358,6 +358,7 @@ describe('GET /api/shop', () => {
         { days: 'Dienstag', hours: 'Ruhetag' },
       ],
       deliveryUntil: '22:00',
+      deliveryPostcodes: [],
       status: {
         now: '2026-09-15T18:00',
         today: { date: '2026-09-15', weekday: 2, pickup: null, delivery: null },

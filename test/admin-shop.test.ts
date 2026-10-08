@@ -145,6 +145,7 @@ describe('GET /api/admin/shop', () => {
       holidayOpen: '13:00',
       holidayClose: '22:30',
       ruhetagBeatsHoliday: true,
+      deliveryPostcodes: [],
     });
     expect(shop.weekly).toHaveLength(7);
     expect(shop.weekly[1]).toEqual({ weekday: 2, open: null, close: null });

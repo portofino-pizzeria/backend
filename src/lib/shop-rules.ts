@@ -77,6 +77,8 @@ export interface ShopRules {
   deliveryUntil: string;
   /** While true, a Ruhetag stays closed on a public holiday (decision D1). */
   ruhetagBeatsHoliday: boolean;
+  /** The postcodes delivered to; empty = no restriction (lib/delivery-area.ts). */
+  deliveryPostcodes: string[];
   specialDays: SpecialDayRule[];
   legal: ShopLegalFacts;
 }
@@ -111,6 +113,7 @@ export function rulesFromRows(
     holiday: { open: profile.holidayOpen, close: profile.holidayClose },
     deliveryUntil: profile.deliveryUntil,
     ruhetagBeatsHoliday: profile.ruhetagBeatsHoliday,
+    deliveryPostcodes: profile.deliveryPostcodes,
     specialDays: specialDays.map(specialDayRule),
     legal: {
       legalOwnerName: profile.legalOwnerName,

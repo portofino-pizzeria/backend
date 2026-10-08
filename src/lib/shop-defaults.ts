@@ -70,6 +70,8 @@ export const DEFAULT_SHOP_RULES: ShopRules = {
    * hard-coded, so the owner can change it without a developer.
    */
   ruhetagBeatsHoliday: true,
+  // No restriction until the owner enters an area.
+  deliveryPostcodes: [],
   specialDays: [
     {
       date: null,
