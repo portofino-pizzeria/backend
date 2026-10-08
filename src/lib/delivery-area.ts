@@ -7,15 +7,17 @@
 // (`createOrder`): a delivery address must name one of these postcodes.
 //
 // The address is one free-text field ("Straße Nr., PLZ Ort"), so the postcode
-// is read OUT of it: a run of exactly five digits. That is the German postcode
-// shape and nothing else in a street address has it — a house number is at
-// most four digits, and a five-digit house number would still be refused
-// rather than accepted by mistake, because it must also be on the list.
+// is read OUT of it: a run of exactly five digits, the German postcode shape.
+// Any other five-digit number in the address would also have to be on the
+// list to be accepted, so it cannot let an outside address through.
 
 import { badRequest } from './http-errors.js';
 
 const POSTCODE = /^\d{5}$/;
 const POSTCODE_IN_TEXT = /(?<!\d)\d{5}(?!\d)/g;
+
+/** Up to this many postcodes are listed in the refusal sentence. */
+const MAX_NAMED_POSTCODES = 12;
 
 /** More than any delivery area a pizzeria serves; bounds a pasted list. */
 const MAX_POSTCODES = 200;
@@ -57,8 +59,11 @@ export function deliveryAreaRefusal(area: readonly string[], address: string): s
     return 'Bitte gib in der Lieferadresse auch die Postleitzahl an, z. B. „Hauptstr. 1, 45219 Essen“.';
   }
   if (found.some((code) => area.includes(code))) return null;
+  // The area is named only while it is short enough to read in one banner.
+  const named =
+    area.length <= MAX_NAMED_POSTCODES ? `Wir liefern in die Postleitzahlen ${area.join(', ')}. ` : '';
   return (
     `Nach ${found[found.length - 1]} liefern wir leider nicht. ` +
-    `Wir liefern in die Postleitzahlen ${area.join(', ')}. Abholung ist natürlich möglich.`
+    `${named}Abholung ist natürlich möglich.`
   );
 }

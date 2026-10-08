@@ -78,6 +78,13 @@ describe('the rules', () => {
     expect(postcodesIn('Weg 1, 452190 Essen')).toEqual([]);
   });
 
+  it('does not list a long area in the refusal', () => {
+    const area = Array.from({ length: 13 }, (_, i) => String(45200 + i));
+    expect(deliveryAreaRefusal(area, 'Weg 1, 10115 Berlin')).toBe(
+      'Nach 10115 liefern wir leider nicht. Abholung ist natürlich möglich.',
+    );
+  });
+
   it('an empty area restricts nothing', () => {
     expect(deliveryAreaRefusal([], 'irgendwo ohne Postleitzahl')).toBeNull();
   });
