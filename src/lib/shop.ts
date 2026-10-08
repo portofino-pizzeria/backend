@@ -267,8 +267,13 @@ export interface ModeStatus {
   available: boolean;
   /** While available: the local `HH:MM` it stops being taken today. */
   until?: string;
-  /** While not available: when it is next taken. */
-  next?: { date: string; weekday: string; time: string };
+  /**
+   * While not available: when it is next taken. `label` is the day as a diner
+   * reads it after "ab": `heute`, `morgen`, the weekday up to six days out,
+   * then the weekday with its date. "Wieder möglich ab Donnerstag" read on a Thursday morning sounds like
+   * next week.
+   */
+  next?: { date: string; weekday: string; label: string; time: string };
 }
 
 export interface ShopStatus {
@@ -292,9 +297,16 @@ function modeStatus(rules: ShopRules, local: LocalDateTime, mode: Fulfilment): M
     const day = hours[mode];
     if (!day) continue;
     if (offset === 0 && local.minutes >= toMinutes(day.open)) continue;
+    const weekday = WEEKDAY_DE[hours.weekday] ?? '';
+    // A week or more away the bare weekday is today's name again, so it carries
+    // the date: "ab Donnerstag, 15.10.", never an "ab Donnerstag" read on a
+    // Thursday that means next week.
+    const [, mm, dd] = hours.date.split('-');
+    const label =
+      offset === 0 ? 'heute' : offset === 1 ? 'morgen' : offset < 7 ? weekday : `${weekday}, ${dd}.${mm}.`;
     return {
       available: false,
-      next: { date: hours.date, weekday: WEEKDAY_DE[hours.weekday] ?? '', time: day.open },
+      next: { date: hours.date, weekday, label, time: day.open },
     };
   }
   return { available: false };
@@ -324,7 +336,7 @@ export function refusalFor(mode: Fulfilment, status: ShopStatus): string | null 
   const s = status[mode];
   if (s.available) return null;
   const when = s.next
-    ? ` Wieder möglich ab ${s.next.weekday}, ${s.next.time} Uhr.`
+    ? ` Wieder möglich ab ${s.next.label}, ${s.next.time} Uhr.`
     : '';
   if (mode === 'delivery' && status.pickup.available) {
     const until = status.today.delivery?.close;

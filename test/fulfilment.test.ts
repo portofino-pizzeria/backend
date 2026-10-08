@@ -201,7 +201,7 @@ describe('opening hours at order time', () => {
       const res = await postOrder({ fulfilment, items: LINE });
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe(
-        'Wir haben gerade geschlossen und nehmen keine Bestellungen an. Wieder möglich ab Mittwoch, 12:00 Uhr.',
+        'Wir haben gerade geschlossen und nehmen keine Bestellungen an. Wieder möglich ab morgen, 12:00 Uhr.',
       );
     }
   });

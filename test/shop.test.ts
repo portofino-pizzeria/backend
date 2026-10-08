@@ -112,21 +112,75 @@ describe('status now', () => {
     const s = shopStatus(RULES, new Date('2026-09-16T20:30:00Z'));
     expect(s.pickup).toEqual({
       available: false,
-      next: { date: '2026-09-17', weekday: 'Donnerstag', time: '12:00' },
+      next: { date: '2026-09-17', weekday: 'Donnerstag', label: 'morgen', time: '12:00' },
     });
     expect(refusalFor('pickup', s)).toBe(
-      'Wir haben gerade geschlossen und nehmen keine Bestellungen an. Wieder möglich ab Donnerstag, 12:00 Uhr.',
+      'Wir haben gerade geschlossen und nehmen keine Bestellungen an. Wieder möglich ab morgen, 12:00 Uhr.',
     );
+  });
+
+  it('Thursday 11:47, before opening: "ab heute", not "ab Donnerstag"', () => {
+    const s = shopStatus(RULES, new Date('2026-09-17T09:47:00Z'));
+    expect(s.pickup.next).toEqual({ date: '2026-09-17', weekday: 'Donnerstag', label: 'heute', time: '12:00' });
+    expect(refusalFor('pickup', s)).toBe(
+      'Wir haben gerade geschlossen und nehmen keine Bestellungen an. Wieder möglich ab heute, 12:00 Uhr.',
+    );
+  });
+
+  it('just after midnight in summer: the Berlin date, so "heute" (UTC still says yesterday)', () => {
+    // 2026-09-16T22:30Z is Thursday 00:30 in Berlin.
+    const s = shopStatus(RULES, new Date('2026-09-16T22:30:00Z'));
+    expect(s.pickup.next?.label).toBe('heute');
+  });
+
+  it('on the night summer time ends: Sunday 00:30 CEST opens at 13:00 "heute"', () => {
+    const s = shopStatus(RULES, new Date('2026-10-24T22:30:00Z'));
+    expect(s.pickup.next).toEqual({ date: '2026-10-25', weekday: 'Sonntag', label: 'heute', time: '13:00' });
+  });
+
+  it('a week away (Betriebsurlaub) names the date, never a bare "ab Donnerstag" on a Thursday', () => {
+    // Thursday 2026-09-17 after closing, closed Friday 18th through Wednesday 23rd.
+    const urlaub = {
+      ...RULES,
+      specialDays: [
+        ...RULES.specialDays,
+        ...['18', '19', '20', '21', '22', '23'].map((d) => ({
+          date: `2026-09-${d}`, monthDay: null, closed: true, open: null, close: null,
+          deliveryUntil: null, note: 'Betriebsurlaub', confirmed: true,
+        })),
+      ],
+    };
+    const s = shopStatus(urlaub, new Date('2026-09-17T20:45:00Z'));
+    expect(s.pickup.next).toEqual({
+      date: '2026-09-24', weekday: 'Donnerstag', label: 'Donnerstag, 24.09.', time: '12:00',
+    });
+    expect(refusalFor('pickup', s)).toBe(
+      'Wir haben gerade geschlossen und nehmen keine Bestellungen an. Wieder möglich ab Donnerstag, 24.09., 12:00 Uhr.',
+    );
+  });
+
+  it('two to six days away keeps the bare weekday, even across a special-day closure', () => {
+    // Monday 23:00, Wednesday 16th closed: Tuesday is the Ruhetag, so Thursday (3 days).
+    const closedWed = {
+      ...RULES,
+      specialDays: [
+        ...RULES.specialDays,
+        { date: '2026-09-16', monthDay: null, closed: true, open: null, close: null,
+          deliveryUntil: null, note: 'geschlossen', confirmed: true },
+      ],
+    };
+    const s = shopStatus(closedWed, new Date('2026-09-14T21:00:00Z'));
+    expect(s.pickup.next?.label).toBe('Donnerstag');
   });
 
   it('Monday 23:00: the next opening skips the Tuesday Ruhetag', () => {
     const s = shopStatus(RULES, new Date('2026-09-14T21:00:00Z'));
-    expect(s.delivery.next).toEqual({ date: '2026-09-16', weekday: 'Mittwoch', time: '12:00' });
+    expect(s.delivery.next).toEqual({ date: '2026-09-16', weekday: 'Mittwoch', label: 'Mittwoch', time: '12:00' });
   });
 
   it('Saturday 12:30: not yet open, opens 13:00 the same day', () => {
     const s = shopStatus(RULES, new Date('2026-09-19T10:30:00Z'));
-    expect(s.pickup.next).toEqual({ date: '2026-09-19', weekday: 'Samstag', time: '13:00' });
+    expect(s.pickup.next).toEqual({ date: '2026-09-19', weekday: 'Samstag', label: 'heute', time: '13:00' });
   });
 });
 
@@ -276,7 +330,7 @@ describe('GET /api/shop', () => {
     expect(body.hours).toHaveLength(3);
     expect(body.status.pickup).toEqual({
       available: false,
-      next: { date: '2026-09-16', weekday: 'Mittwoch', time: '12:00' },
+      next: { date: '2026-09-16', weekday: 'Mittwoch', label: 'morgen', time: '12:00' },
     });
   });
 
@@ -309,11 +363,11 @@ describe('GET /api/shop', () => {
         today: { date: '2026-09-15', weekday: 2, pickup: null, delivery: null },
         pickup: {
           available: false,
-          next: { date: '2026-09-16', weekday: 'Mittwoch', time: '12:00' },
+          next: { date: '2026-09-16', weekday: 'Mittwoch', label: 'morgen', time: '12:00' },
         },
         delivery: {
           available: false,
-          next: { date: '2026-09-16', weekday: 'Mittwoch', time: '12:00' },
+          next: { date: '2026-09-16', weekday: 'Mittwoch', label: 'morgen', time: '12:00' },
         },
       },
       specialDays: [],
